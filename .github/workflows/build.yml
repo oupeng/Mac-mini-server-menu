@@ -1,0 +1,53 @@
+name: Manual Build MiniMonitor
+
+on:
+  workflow_dispatch: # 唯一触发条件：仅手动在 GitHub 页面点击触发
+
+jobs:
+  build-server:
+    name: Build Mac mini Server (Catalina x86_64)
+    runs-on: macos-13 # 提供兼容 x86_64 的编译环境
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build minimonitord
+        run: |
+          cd Server
+          # 针对 macOS 10.15 纯 x86_64 架构编译
+          swift build -c release --triple x86_64-apple-macosx10.15
+          mkdir -p ../dist/server
+          cp .build/x86_64-apple-macosx10.15/release/minimonitord ../dist/server/
+          cp com.user.minimonitor.plist ../dist/server/
+
+      - name: Upload Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacMini-Server-Catalina
+          path: dist/server/
+
+  build-client:
+    name: Build MacBook Pro Client (macOS 26 x86_64)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build MiniBar MenuBar App
+        run: |
+          cd Client
+          # 编译 Intel 架构 App
+          xcodebuild -scheme MiniBar \
+                     -configuration Release \
+                     -destination 'platform=macOS,arch=x86_64' \
+                     clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED=NO
+          
+          mkdir -p ../dist/client
+          # 将编译生成的 .app 归档打包
+          find ~/Library/Developer/Xcode/DerivedData -name "MiniBar.app" -exec cp -R {} ../dist/client/ \;
+
+      - name: Upload Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacBook-MiniBar-Client
+          path: dist/client/
