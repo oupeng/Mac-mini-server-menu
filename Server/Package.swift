@@ -10,10 +10,7 @@ let package = Package(
     targets: [
         .target(
             name: "MiniServer",
-            dependencies: [],
-            cSettings: [
-                .unsafeFlags(["-Ounchecked"]) // 极限优化，降低开销
-            ]
+            dependencies: []
         )
     ]
 )
