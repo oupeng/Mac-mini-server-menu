@@ -7,7 +7,6 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // 顶栏：服务器标题与操作
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
@@ -28,7 +27,6 @@ struct DetailPopoverView: View {
             if showingSettings {
                 SettingsView(vm: vm, isPresented: $showingSettings)
             } else if let d = vm.data, vm.isOnline {
-                // 1. 核心指标区
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
                         MetricCard(
@@ -37,13 +35,15 @@ struct DetailPopoverView: View {
                             subtitle: "\(Int(d.cpuTemp))°C  \(Int(d.powerWatts))W"
                         )
                         
-                        // 核心变更：内存与详细压力展示
+                        // 显示精准内存占用，及括号内真实的内存压力百分比
                         let pressureLevel = d.memPressureLevel ?? 1
                         let pressureStr = pressureLevel >= 4 ? "危险 (Critical)" : (pressureLevel >= 2 ? "警告 (Warning)" : "正常 (Normal)")
+                        let pPct = Int(d.memPressurePercent ?? 0)
+                        
                         MetricCard(
                             title: "物理内存与压力",
                             value: String(format: "%.1f%%", d.memPercent),
-                            subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G\n压力: \(pressureStr)  已交换: \(d.swapUsedMB ?? 0)M"
+                            subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G\n压力: \(pressureStr) (\(pPct)%)  已交换: \(d.swapUsedMB ?? 0)M"
                         )
                     }
 
@@ -140,7 +140,6 @@ struct DetailPopoverView: View {
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
                 }
 
-                // 3. 活跃进程
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("活跃进程 (按内存排序 Top 10)")
@@ -177,7 +176,7 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                // 4. 底部快捷按钮（只保留 1 个打开屏幕镜像）
+                // 核心修改：仅保留屏幕镜像按钮，并采用 Bonjour 内网域名 (.local)
                 HStack {
                     Spacer()
                     Button("打开屏幕镜像") {
@@ -261,7 +260,7 @@ struct MetricCard: View {
             Text(subtitle)
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundColor(.secondary)
-                .lineSpacing(2) // 增加行距，避免三行文字过于拥挤
+                .lineSpacing(2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
