@@ -18,14 +18,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // 固定 250pt 宽度
+    // 锁定物理宽度为 250pt
     private let fixedBarWidth: CGFloat = 250.0
+
+    // 居中锚点视图（用于绕过 NSStatusBarButton 的 24pt 私有左偏机制）
+    private var centerAnchorView: CenterAnchorView!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         viewModel = MonitorViewModel()
 
         statusItem = NSStatusBar.system.statusItem(withLength: fixedBarWidth)
         guard let button = statusItem.button else { return }
+
+        // 核心技术点：在 250pt 的几何正中心 (X=124~126) 埋下透明穿透锚点
+        let anchor = CenterAnchorView(frame: NSRect(x: (fixedBarWidth / 2.0) - 1.0, y: 0, width: 2.0, height: 22.0))
+        button.addSubview(anchor)
+        self.centerAnchorView = anchor
 
         renderMenuBarImage()
 
@@ -61,52 +69,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 诊断版本的点击响应：打印所有坐标数据并尝试呼出弹窗
+    /// 选项 1 落地：小三角箭头永远 100% 精准对准长条正中心
     @objc func togglePopover() {
-        guard let button = statusItem.button else {
-            print("[MiniBar 诊断] ❌ 失败: statusItem.button 为空！")
-            return
-        }
-
-        print("===================== [MiniBar 诊断开始] =====================")
-        // 1. 鼠标屏幕绝对物理坐标
-        let mouseLoc = NSEvent.mouseLocation
-        print("[诊断 1] 鼠标屏幕绝对坐标: X = \(mouseLoc.x), Y = \(mouseLoc.y)")
-
-        // 2. 主屏幕信息
-        if let screen = NSScreen.main {
-            print("[诊断 2] 主屏幕 Frame: \(screen.frame), 顶部 Y = \(screen.frame.maxY)")
-        }
-
-        // 3. 按钮本身的 bounds
-        print("[诊断 3] button.bounds: \(button.bounds)")
-
-        // 4. 按钮所在系统窗口的 Frame 与绝对转换
-        if let win = button.window {
-            print("[诊断 4] button.window Frame: \(win.frame)")
-            print("[诊断 5] button 转换到屏幕的绝对坐标: \(win.convertToScreen(button.bounds))")
-        } else {
-            print("[诊断 4/5] ⚠️ button.window 不存在！")
-        }
-
         if popover.isShown {
-            print("[诊断 6] Popover 当前为打开状态，执行关闭")
             popover.performClose(nil)
-            print("============================================================\n")
             return
         }
+
+        guard let anchor = centerAnchorView else { return }
 
         NSApp.activate(ignoringOtherApps: true)
 
-        // 触发系统原生弹出
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-
-        // 5. 弹出后检查弹窗真实的窗口位置
-        if let popoverWindow = popover.contentViewController?.view.window {
-            print("[诊断 7] 💥 Popover 最终生成的真实窗口 Frame: \(popoverWindow.frame)")
-        }
-        print("===================== [MiniBar 诊断结束] =====================\n")
-
+        // 关键：以正中心的普通 NSView 为基准弹出，彻底破除系统的左偏判定！
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+    }
+}
+
+/// 纯透明且彻底穿透点击的中心锚点视图（绝不干扰任何鼠标交互）
+final class CenterAnchorView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil // 彻底穿透给底层的状态栏按钮，保障全长条点击响应
     }
 }
