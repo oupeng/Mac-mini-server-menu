@@ -7,6 +7,7 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            // 顶栏：服务器标题与操作
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
@@ -35,10 +36,14 @@ struct DetailPopoverView: View {
                             value: String(format: "%.1f%%", d.cpuUsage),
                             subtitle: "\(Int(d.cpuTemp))°C  \(Int(d.powerWatts))W"
                         )
+                        
+                        // 核心变更：内存与详细压力展示
+                        let pressureLevel = d.memPressureLevel ?? 1
+                        let pressureStr = pressureLevel >= 4 ? "危险 (Critical)" : (pressureLevel >= 2 ? "警告 (Warning)" : "正常 (Normal)")
                         MetricCard(
-                            title: "物理内存",
+                            title: "物理内存与压力",
                             value: String(format: "%.1f%%", d.memPercent),
-                            subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G"
+                            subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G\n压力: \(pressureStr)  已交换: \(d.swapUsedMB ?? 0)M"
                         )
                     }
 
@@ -82,7 +87,6 @@ struct DetailPopoverView: View {
                     }
                 }
 
-                // 2. 核心新增：存储空间与健康 (位置在进程上方，10分钟更新)
                 if let volumes = d.diskVolumes, !volumes.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -103,12 +107,10 @@ struct DetailPopoverView: View {
                                             .font(.system(size: 11.5, weight: .medium))
                                             .lineLimit(1)
                                         Spacer()
-                                        // 数字显示剩余
                                         Text("剩余 \(formatTotalBytes(vol.freeBytes))")
                                             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                             .foregroundColor(.white.opacity(0.85))
 
-                                        // 低饱和度精致 SMART 标签 (绝不刺眼)
                                         Text(vol.smartStatus)
                                             .font(.system(size: 8.5, weight: .medium))
                                             .padding(.horizontal, 4)
@@ -120,7 +122,6 @@ struct DetailPopoverView: View {
                                             .foregroundColor(smartBadgeForeground(vol.smartStatus))
                                     }
 
-                                    // 条形显示占用
                                     GeometryReader { g in
                                         ZStack(alignment: .leading) {
                                             Capsule()
@@ -139,7 +140,7 @@ struct DetailPopoverView: View {
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
                 }
 
-                // 3. 活跃进程 (按内存排序 Top 10)
+                // 3. 活跃进程
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("活跃进程 (按内存排序 Top 10)")
@@ -176,20 +177,16 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                HStack(spacing: 8) {
-                    Button("打开屏幕镜像 (VNC)") {
-                        if let url = URL(string: "vnc://\(vm.serverIP)") {
+                // 4. 底部快捷按钮（只保留 1 个打开屏幕镜像）
+                HStack {
+                    Spacer()
+                    Button("打开屏幕镜像") {
+                        if let url = URL(string: "vnc://DPHomedeMac-mini.local") {
                             NSWorkspace.shared.open(url)
                         }
                     }
                     .controlSize(.small)
-
-                    Button("终端 SSH") {
-                        if let url = URL(string: "ssh://\(vm.serverIP)") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .controlSize(.small)
+                    Spacer()
                 }
             } else {
                 VStack(spacing: 8) {
@@ -236,14 +233,12 @@ struct DetailPopoverView: View {
         }
     }
 
-    // 柔和低饱和度背景 (绝不突兀)
     private func smartBadgeBackground(_ status: String) -> Color {
         if status == "良好" { return Color.white.opacity(0.1) }
         if status == "故障" { return Color.red.opacity(0.2) }
         return Color.white.opacity(0.06)
     }
 
-    // 柔和字体颜色
     private func smartBadgeForeground(_ status: String) -> Color {
         if status == "良好" { return Color.white.opacity(0.8) }
         if status == "故障" { return Color.red.opacity(0.9) }
@@ -266,6 +261,7 @@ struct MetricCard: View {
             Text(subtitle)
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundColor(.secondary)
+                .lineSpacing(2) // 增加行距，避免三行文字过于拥挤
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
