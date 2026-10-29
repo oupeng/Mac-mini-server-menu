@@ -6,20 +6,23 @@ struct MiniBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // 空 Settings 场景，不再依赖任何 Menubar 限制，纯靠底层托管
         Settings {
             EmptyView()
         }
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var popover = NSPopover()
-    let viewModel = MonitorViewModel()
+    var viewModel: MonitorViewModel!
     private var hostingView: PassthroughHostingView<MenuBarStatusView>!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 在主线程上下文中初始化 ViewModel
+        viewModel = MonitorViewModel()
+
         // 1. 创建真正支持可变宽度的系统级状态栏项 (Variable Length)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
