@@ -18,7 +18,7 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <!-- 关键配置：允许局域网直接进行 ws:// 明文传输，不受 ATS 限制 -->
+    <!-- 关键 1：允许局域网非加密传输 -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
@@ -26,5 +26,8 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <!-- 关键 2：声明局域网访问权限，激活 macOS 双击权限弹窗 -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>需要访问局域网以连接 Mac mini 监控服务器</string>
 </dict>
 </plist>
