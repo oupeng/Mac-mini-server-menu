@@ -12,13 +12,15 @@ public struct MetricsData: Codable {
     public let memPercent: Double
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
+    public let totalRxBytes: UInt64?       // 接收开机累计总下载
+    public let totalTxBytes: UInt64?       // 接收开机累计总上传
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
     public let topProcesses: [TopProcessItem]
 }
 
 public struct TopProcessItem: Codable, Identifiable {
-    public var id: String { name }
+    public var id: String { name + "\(cpu)" + "\(memMB)" }
     public let name: String
     public let cpu: Double
     public let memMB: Int
@@ -32,7 +34,6 @@ public final class MonitorViewModel: ObservableObject {
     @Published public var data: MetricsData?
     @Published public var isOnline: Bool = false
 
-    // 最近 18 个采样点历史缓冲队列（用于菜单栏波形绘制）
     @Published public var cpuHistory: [Double] = Array(repeating: 0.0, count: 18)
     @Published public var netRxHistory: [Double] = Array(repeating: 0.0, count: 18)
     @Published public var netTxHistory: [Double] = Array(repeating: 0.0, count: 18)
@@ -70,6 +71,9 @@ public final class MonitorViewModel: ObservableObject {
         startHeartbeat()
     }
 
+    public func fetch() { connectWebSocket() }
+    public func startPolling() { connectWebSocket() }
+
     private func listenMessage() {
         webSocketTask?.receive { [weak self] result in
             Task { @MainActor [weak self] in
@@ -100,10 +104,9 @@ public final class MonitorViewModel: ObservableObject {
     private func handleIncomingData(_ payloadData: Data) {
         if let decoded = try? JSONDecoder().decode(MetricsData.self, from: payloadData) {
             self.data = decoded
-            
-            // 更新滑动历史窗口
+
             updateHistory(&cpuHistory, newRatio: decoded.cpuUsage / 100.0)
-            updateHistory(&netRxHistory, newRatio: min(Double(decoded.netRxBytesPerSec) / (1024 * 1024 * 10), 1.0)) // 基准 10MB/s 归一化
+            updateHistory(&netRxHistory, newRatio: min(Double(decoded.netRxBytesPerSec) / (1024 * 1024 * 10), 1.0))
             updateHistory(&netTxHistory, newRatio: min(Double(decoded.netTxBytesPerSec) / (1024 * 1024 * 5), 1.0))
             updateHistory(&diskReadHistory, newRatio: min(Double(decoded.diskReadBytesPerSec) / (1024 * 1024 * 20), 1.0))
             updateHistory(&diskWriteHistory, newRatio: min(Double(decoded.diskWriteBytesPerSec) / (1024 * 1024 * 20), 1.0))
