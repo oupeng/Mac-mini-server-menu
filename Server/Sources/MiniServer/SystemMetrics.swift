@@ -41,6 +41,8 @@ public final class MetricsCollector {
     private var lastCPULoad: host_cpu_load_info?
     private var lastNetRx: UInt64 = 0
     private var lastNetTx: UInt64 = 0
+    private var currentTotalRx: UInt64 = 0
+    private var currentTotalTx: UInt64 = 0
     private var lastNetTime: Date = Date()
 
     private var lastDiskRead: UInt64 = 0
@@ -140,6 +142,9 @@ public final class MetricsCollector {
             }
         }
 
+        currentTotalRx = currentRx
+        currentTotalTx = currentTx
+
         let now = Date()
         let elapsed = max(now.timeIntervalSince(lastNetTime), 0.1)
         let rxSpeed = (lastNetRx > 0 && currentRx >= lastNetRx) ? UInt64(Double(currentRx - lastNetRx) / elapsed) : 0
@@ -151,31 +156,30 @@ public final class MetricsCollector {
         return (rxSpeed, txSpeed, currentRx, currentTx)
     }
 
-    // 核心升级：遍历 IOMedia 顶级根节点，彻底覆盖所有内置 SSD、外接 USB 硬盘盒与磁盘阵列
+    // 核心修复：还原到 IOBlockStorageDriver，完美聚合所有内置与外置磁盘读写活动
     public func getDiskThroughput() -> (readSec: UInt64, writeSec: UInt64) {
-        var mediaList: io_iterator_t = 0
-        // 匹配所有存储介质节点
-        let match = IOServiceMatching("IOMedia")
-        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &mediaList) == kIOReturnSuccess else {
+        var diskList: io_iterator_t = 0
+        let match = IOServiceMatching("IOBlockStorageDriver")
+        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &diskList) == kIOReturnSuccess else {
             return (0, 0)
         }
-        defer { IOObjectRelease(mediaList) }
+        defer { IOObjectRelease(diskList) }
 
         var totalRead: UInt64 = 0
         var totalWrite: UInt64 = 0
-        var media: io_object_t = IOIteratorNext(mediaList)
+        var drive: io_object_t = IOIteratorNext(diskList)
 
-        while media != 0 {
+        while drive != 0 {
             var props: Unmanaged<CFMutableDictionary>?
-            if IORegistryEntryCreateCFProperties(media, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+            if IORegistryEntryCreateCFProperties(drive, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
                let dict = props?.takeRetainedValue() as? [String: Any],
-               let isWhole = dict["Whole"] as? Bool, isWhole, // 仅统计整块物理盘，避免各分区重复累加
                let stats = dict["Statistics"] as? [String: Any] {
+                // 不再进行多余的过滤，直接累加所有块存储驱动的 I/O 字节数
                 totalRead += (stats["Bytes (Read)"] as? UInt64) ?? 0
                 totalWrite += (stats["Bytes (Write)"] as? UInt64) ?? 0
             }
-            IOObjectRelease(media)
-            media = IOIteratorNext(mediaList)
+            IOObjectRelease(drive)
+            drive = IOIteratorNext(diskList)
         }
 
         let now = Date()
