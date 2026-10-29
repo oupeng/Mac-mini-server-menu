@@ -27,8 +27,9 @@ public struct MetricsPayload: Codable {
     public let memUsedMB: Int
     public let memTotalMB: Int
     public let memPercent: Double
-    public let memPressureLevel: Int  // 新增：内存压力等级 (1=正常, 2=警告, 4=危险)
-    public let swapUsedMB: Int        // 新增：Swap 交换占用
+    public let memPressurePercent: Double // 新增：精确的连续内存压力比例 (用于波形图高度)
+    public let memPressureLevel: Int
+    public let swapUsedMB: Int
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
     public let totalRxBytes: UInt64
@@ -87,7 +88,8 @@ public final class MetricsCollector {
         return ((userDiff + sysDiff + niceDiff) / totalTicks) * 100.0
     }
 
-    public func getMemoryStats() -> (usedMB: Int, totalMB: Int, percent: Double) {
+    // 核心新增：提取 Wired 与 Compressed，计算真实的“内存压力”高度
+    public func getMemoryStats() -> (usedMB: Int, totalMB: Int, percent: Double, pressurePercent: Double) {
         var vmStats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &vmStats) {
@@ -97,29 +99,32 @@ public final class MetricsCollector {
         }
         let totalBytes = ProcessInfo.processInfo.physicalMemory
         let totalMB = Int(totalBytes / (1024 * 1024))
-        guard result == KERN_SUCCESS else { return (0, totalMB, 0.0) }
+        guard result == KERN_SUCCESS else { return (0, totalMB, 0.0, 0.0) }
 
         let pageSize = UInt64(vm_kernel_page_size)
         let active = UInt64(vmStats.active_count) * pageSize
         let wired = UInt64(vmStats.wire_count) * pageSize
         let compressed = UInt64(vmStats.compressor_page_count) * pageSize
+        
         let usedBytes = active + wired + compressed
         let usedMB = Int(usedBytes / (1024 * 1024))
+        
+        // 整体占用率
         let percent = (Double(usedBytes) / Double(totalBytes)) * 100.0
+        // 真实内存压力（对齐活动监视器的图形逻辑）
+        let pressurePercent = (Double(wired + compressed) / Double(totalBytes)) * 100.0
 
-        return (usedMB, totalMB, percent)
+        return (usedMB, totalMB, percent, min(100.0, pressurePercent))
     }
 
-    // 核心新增：直接向系统内核查询内存压力等级与 Swap 容量
     public func getMemoryPressure() -> (level: Int, swapMB: Int) {
-        var level: Int32 = 1 // 1: 正常, 2: 警告, 4: 危险
+        var level: Int32 = 1 
         var size = MemoryLayout<Int32>.size
         sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0)
 
         var swapUsedMB = 0
         var buf = [UInt64](repeating: 0, count: 4)
         var bufSize = buf.count * MemoryLayout<UInt64>.size
-        // vm.swapusage 返回的结构体中，第三个 UInt64 就是已用交换空间 (xsu_used)
         if sysctlbyname("vm.swapusage", &buf, &bufSize, nil, 0) == 0 {
             swapUsedMB = Int(buf[2] / (1024 * 1024))
         }
@@ -235,7 +240,6 @@ public final class MetricsCollector {
                 if mntOn.contains("Preboot") || mntOn.contains("Recovery") || mntOn.contains("VM") {
                     continue
                 }
-
                 let blockSize = UInt64(fs.f_bsize)
                 let totalBytes = UInt64(fs.f_blocks) * blockSize
                 let freeBytes = UInt64(fs.f_bavail) * blockSize
@@ -272,9 +276,7 @@ public final class MetricsCollector {
         var map: [String: String] = [:]
         var iter: io_iterator_t = 0
         let match = IOServiceMatching("IOBlockStorageDevice")
-        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &iter) == kIOReturnSuccess else {
-            return map
-        }
+        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &iter) == kIOReturnSuccess else { return map }
         defer { IOObjectRelease(iter) }
 
         var dev = IOIteratorNext(iter)
@@ -284,13 +286,9 @@ public final class MetricsCollector {
                let dict = props?.takeRetainedValue() as? [String: Any],
                let bsdName = dict["BSD Name"] as? String {
                 if let smart = dict["SMART Status"] as? String {
-                    if smart == "Verified" {
-                        map[bsdName] = "良好"
-                    } else if smart == "Failing" {
-                        map[bsdName] = "故障"
-                    } else {
-                        map[bsdName] = "不支持"
-                    }
+                    if smart == "Verified" { map[bsdName] = "良好" }
+                    else if smart == "Failing" { map[bsdName] = "故障" }
+                    else { map[bsdName] = "不支持" }
                 } else {
                     map[bsdName] = "不支持"
                 }
@@ -308,14 +306,13 @@ public final class MetricsCollector {
         let pipe = Pipe()
         task.standardOutput = pipe
         task.launch()
-
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
 
         guard let output = String(data: data, encoding: .utf8) else { return [] }
         var result: [TopProcess] = []
-
         let lines = output.components(separatedBy: "\n")
+        
         for line in lines.dropFirst() {
             if result.count >= 10 { break }
             let parts = line.trimmingCharacters(in: .whitespaces)
@@ -339,7 +336,7 @@ public final class MetricsCollector {
     public func collectPayload() -> MetricsPayload {
         let cpu = getCPUUsage()
         let mem = getMemoryStats()
-        let memPressure = getMemoryPressure() // 读取内存压力
+        let memPressure = getMemoryPressure()
         let net = getNetworkThroughput()
         let disk = getDiskThroughput()
         let temp = SMCReader.shared.getCPUTemperature()
@@ -366,6 +363,7 @@ public final class MetricsCollector {
             memUsedMB: mem.usedMB,
             memTotalMB: mem.totalMB,
             memPercent: mem.percent,
+            memPressurePercent: mem.pressurePercent,
             memPressureLevel: memPressure.level,
             swapUsedMB: memPressure.swapMB,
             netRxBytesPerSec: net.rxSec,
