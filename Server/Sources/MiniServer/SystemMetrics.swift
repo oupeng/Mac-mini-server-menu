@@ -27,7 +27,7 @@ public struct MetricsPayload: Codable {
     public let memUsedMB: Int
     public let memTotalMB: Int
     public let memPercent: Double
-    public let memPressurePercent: Double // 新增：精确的连续内存压力比例 (用于波形图高度)
+    public let memPressurePercent: Double
     public let memPressureLevel: Int
     public let swapUsedMB: Int
     public let netRxBytesPerSec: UInt64
@@ -36,6 +36,7 @@ public struct MetricsPayload: Codable {
     public let totalTxBytes: UInt64
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
+    public let processCount: Int           // 新增：系统总进程数
     public let topProcesses: [TopProcess]
     public let diskVolumes: [DiskVolumeInfo]
 }
@@ -88,7 +89,6 @@ public final class MetricsCollector {
         return ((userDiff + sysDiff + niceDiff) / totalTicks) * 100.0
     }
 
-    // 核心新增：提取 Wired 与 Compressed，计算真实的“内存压力”高度
     public func getMemoryStats() -> (usedMB: Int, totalMB: Int, percent: Double, pressurePercent: Double) {
         var vmStats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
@@ -108,10 +108,7 @@ public final class MetricsCollector {
         
         let usedBytes = active + wired + compressed
         let usedMB = Int(usedBytes / (1024 * 1024))
-        
-        // 整体占用率
         let percent = (Double(usedBytes) / Double(totalBytes)) * 100.0
-        // 真实内存压力（对齐活动监视器的图形逻辑）
         let pressurePercent = (Double(wired + compressed) / Double(totalBytes)) * 100.0
 
         return (usedMB, totalMB, percent, min(100.0, pressurePercent))
@@ -299,7 +296,8 @@ public final class MetricsCollector {
         return map
     }
 
-    public func getRealTopProcesses() -> [TopProcess] {
+    // 核心新增：提取系统当前总进程数
+    public func getRealTopProcesses() -> (top: [TopProcess], processCount: Int) {
         let task = Process()
         task.launchPath = "/bin/ps"
         task.arguments = ["-Aceo", "%cpu,rss,comm", "-m"]
@@ -309,10 +307,13 @@ public final class MetricsCollector {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
 
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        guard let output = String(data: data, encoding: .utf8) else { return ([], 0) }
         var result: [TopProcess] = []
         let lines = output.components(separatedBy: "\n")
         
+        // 减去表头和尾部的空行，得到真实进程总数
+        let totalCount = max(0, lines.count - 2)
+
         for line in lines.dropFirst() {
             if result.count >= 10 { break }
             let parts = line.trimmingCharacters(in: .whitespaces)
@@ -330,7 +331,7 @@ public final class MetricsCollector {
                 }
             }
         }
-        return result
+        return (result, totalCount)
     }
 
     public func collectPayload() -> MetricsPayload {
@@ -341,7 +342,7 @@ public final class MetricsCollector {
         let disk = getDiskThroughput()
         let temp = SMCReader.shared.getCPUTemperature()
         let power = SMCReader.shared.getSystemPower()
-        let topProcs = getRealTopProcesses()
+        let processData = getRealTopProcesses()
         let volumes = getDiskVolumesCached()
 
         var load = [Double](repeating: 0.0, count: 3)
@@ -372,7 +373,8 @@ public final class MetricsCollector {
             totalTxBytes: net.totalTx,
             diskReadBytesPerSec: disk.readSec,
             diskWriteBytesPerSec: disk.writeSec,
-            topProcesses: topProcs,
+            processCount: processData.processCount,
+            topProcesses: processData.top,
             diskVolumes: volumes
         )
     }
