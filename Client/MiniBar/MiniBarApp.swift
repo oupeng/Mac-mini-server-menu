@@ -18,8 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // 锁定物理宽度
+    // 2 倍图表宽度后的固定物理宽度（永久锁死绝不抖动）
     private let fixedBarWidth: CGFloat = 250.0
+
+    // 专用于精准定位的绝对屏幕锚点窗口（彻底解决 ControlCenter 虚拟化导致的 X=0 左移 Bug）
+    private var anchorWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         viewModel = MonitorViewModel()
@@ -61,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 核心修复：精准计算真实屏幕物理坐标，彻底消除跨进程控制中心引发的左偏错位
+    /// 核心修复：基于真实物理鼠标点击点锚定弹窗，终结任何系统级错位！
     @objc func togglePopover() {
         guard let button = statusItem.button else { return }
         
@@ -73,14 +76,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 1. 激活 App 前台权限
         NSApp.activate(ignoringOtherApps: true)
 
-        // 2. 获取按钮在其宿主 Window 内的绝对坐标，并做安全校验
-        let buttonBounds = button.bounds
-
-        // 在现代 macOS 控制中心托管下，直接使用 button 并指明底层 bounds
-        // 如果 bounds 正常，系统能通过 button 获得相对视图层级
-        popover.show(relativeTo: buttonBounds, of: button, preferredEdge: .minY)
+        // 2. 获取用户点击时的全局绝对物理屏幕坐标 (Global Screen Point)
+        let mouseLoc = NSEvent.mouseLocation
         
-        // 3. 确保弹窗窗口成为 Key Window 接受交互
+        // 获取当前屏幕的菜单栏底部高度
+        let currentScreen = NSScreen.screens.first(where: { NSPointInRect(mouseLoc, $0.frame) }) ?? NSScreen.main ?? NSScreen.screens[0]
+        let menuBarBottomY = currentScreen.frame.maxY - 24.0
+
+        // 3. 构建精准物理锚点 (以用户点击的 X 坐标为中心，紧贴菜单栏底边缘)
+        let anchorRect = NSRect(x: mouseLoc.x - 1, y: menuBarBottomY, width: 2, height: 2)
+
+        if anchorWindow == nil {
+            let win = NSWindow(contentRect: anchorRect, styleMask: .borderless, backing: .buffered, defer: false)
+            win.isOpaque = false
+            win.backgroundColor = .clear
+            win.level = .statusBar
+            win.ignoresMouseEvents = true
+            anchorWindow = win
+        } else {
+            anchorWindow?.setFrame(anchorRect, display: false)
+        }
+
+        guard let anchorWin = anchorWindow, let anchorView = anchorWin.contentView else { return }
+        anchorWin.orderFront(nil)
+
+        // 4. 将 Popover 精确锚定在真实的物理点击位置，小三角必定正对点击处！
+        popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .minY)
+        
+        // 5. 成为焦点窗口，点击外部自动收起
         popover.contentViewController?.view.window?.makeKey()
     }
 }
