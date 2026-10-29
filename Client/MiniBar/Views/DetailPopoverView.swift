@@ -7,7 +7,7 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // 顶栏：服务器标题与操作
+            // 顶栏：服务器标题、运行时间与设置按钮
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
@@ -28,7 +28,7 @@ struct DetailPopoverView: View {
             if showingSettings {
                 SettingsView(vm: vm, isPresented: $showingSettings)
             } else if let d = vm.data, vm.isOnline {
-                // 核心指标卡片
+                // 核心指标卡片区
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
                         MetricCard(
@@ -44,25 +44,52 @@ struct DetailPopoverView: View {
                     }
 
                     HStack(spacing: 10) {
-                        // 带有开机累计总吞吐量的物理网卡卡片
-                        MetricCard(
-                            title: "物理网络吞吐 (en0)",
-                            value: "↓ \(formatDetailedSpeed(d.netRxBytesPerSec))",
-                            subtitle: "↑ \(formatDetailedSpeed(d.netTxBytesPerSec))\n累计: ↓\(formatTotalBytes(d.totalRxBytes ?? 0))  ↑\(formatTotalBytes(d.totalTxBytes ?? 0))"
-                        )
+                        // 专为网络打造的无截断卡片：清晰展示实时速率 + 累计总吞吐
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("物理网络吞吐 (en0)")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            
+                            HStack(spacing: 6) {
+                                Text("↓ \(formatDetailedSpeed(d.netRxBytesPerSec))")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                Text("↑ \(formatDetailedSpeed(d.netTxBytesPerSec))")
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            // 开机累计总吞吐量独立行展示，绝不省略号截断
+                            Text("累计: ↓\(formatTotalBytes(d.totalRxBytes ?? 0))  ↑\(formatTotalBytes(d.totalTxBytes ?? 0))")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                        MetricCard(
-                            title: "磁盘活动",
-                            value: "R: \(formatDetailedSpeed(d.diskReadBytesPerSec))",
-                            subtitle: "W: \(formatDetailedSpeed(d.diskWriteBytesPerSec))\nI/O 实时读写监控"
-                        )
+                        // 磁盘活动卡片
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("磁盘活动")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            
+                            Text("R: \(formatDetailedSpeed(d.diskReadBytesPerSec))")
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                            
+                            Text("W: \(formatDetailedSpeed(d.diskWriteBytesPerSec))")
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
                     }
                 }
 
-                // 真实 Top 10 活跃进程列表
+                // 完整铺开 10 个进程（以内存占用排序，无滚动条截断）
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("活跃进程 (Top 10)")
+                        Text("活跃进程 (按内存排序 Top 10)")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.secondary)
                         Spacer()
@@ -75,30 +102,29 @@ struct DetailPopoverView: View {
                             .frame(width: 45, alignment: .trailing)
                     }
 
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 5) {
-                            ForEach(d.topProcesses) { proc in
-                                HStack {
-                                    Text(proc.name)
-                                        .font(.system(size: 11.5, weight: .regular))
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text("\(proc.memMB) MB")
-                                        .font(.system(size: 10.5, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                    Text(String(format: "%.1f%%", proc.cpu))
-                                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                                        .frame(width: 45, alignment: .trailing)
-                                }
+                    // 10 个进程完整直接平铺排布
+                    VStack(spacing: 5) {
+                        ForEach(d.topProcesses) { proc in
+                            HStack {
+                                Text(proc.name)
+                                    .font(.system(size: 11, weight: .regular))
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(proc.memMB) MB")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.teal)
+                                Text(String(format: "%.1f%%", proc.cpu))
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 45, alignment: .trailing)
                             }
                         }
                     }
-                    .frame(maxHeight: 160) // 容纳 10 个进程的高品质滚动区
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                // 快捷直达运维工具
+                // 快捷运维工具
                 HStack(spacing: 8) {
                     Button("打开屏幕镜像 (VNC)") {
                         if let url = URL(string: "vnc://\(vm.serverIP)") {
@@ -126,7 +152,7 @@ struct DetailPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: 320)
+        .frame(width: 340) // 宽度加宽至 340pt，让所有文字与 10 个进程从容展开
     }
 
     private func formatUptime(_ seconds: Int) -> String {
@@ -141,7 +167,6 @@ struct DetailPopoverView: View {
         return String(format: "%.2f MB/s", kb / 1024.0)
     }
 
-    // 格式化开机累计总吞吐量 (GB / TB)
     private func formatTotalBytes(_ bytes: UInt64) -> String {
         let gb = Double(bytes) / (1024.0 * 1024.0 * 1024.0)
         if gb < 1000 {
@@ -167,7 +192,6 @@ struct MetricCard: View {
             Text(subtitle)
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundColor(.secondary)
-                .lineSpacing(2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
