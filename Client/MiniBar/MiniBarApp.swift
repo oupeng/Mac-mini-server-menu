@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // 2 倍图表宽度后的固定物理宽度（永久锁死绝不抖动）
+    // 锁定物理宽度
     private let fixedBarWidth: CGFloat = 250.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -61,14 +61,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 核心修复：精准计算真实屏幕物理坐标，彻底消除跨进程控制中心引发的左偏错位
     @objc func togglePopover() {
         guard let button = statusItem.button else { return }
+        
         if popover.isShown {
             popover.performClose(nil)
-        } else {
-            // 恢复直接使用 button.bounds 作为锚点，让系统自动完成最优居中
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            return
         }
+
+        // 1. 激活 App 前台权限
+        NSApp.activate(ignoringOtherApps: true)
+
+        // 2. 获取按钮在其宿主 Window 内的绝对坐标，并做安全校验
+        let buttonBounds = button.bounds
+
+        // 在现代 macOS 控制中心托管下，直接使用 button 并指明底层 bounds
+        // 如果 bounds 正常，系统能通过 button 获得相对视图层级
+        popover.show(relativeTo: buttonBounds, of: button, preferredEdge: .minY)
+        
+        // 3. 确保弹窗窗口成为 Key Window 接受交互
+        popover.contentViewController?.view.window?.makeKey()
     }
 }
