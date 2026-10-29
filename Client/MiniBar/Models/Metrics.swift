@@ -53,6 +53,10 @@ public final class MonitorViewModel: ObservableObject {
         startHeartbeat()
     }
 
+    // 兼容器方法
+    public func fetch() { connectWebSocket() }
+    public func startPolling() { connectWebSocket() }
+
     private func listenMessage() {
         webSocketTask?.receive { [weak self] result in
             Task { @MainActor [weak self] in
@@ -70,11 +74,9 @@ public final class MonitorViewModel: ObservableObject {
                     @unknown default:
                         break
                     }
-                    // 持续监听下一条推送
                     self.listenMessage()
 
                 case .failure:
-                    // 出现网络波动或 Mac mini 关机，瞬间感知并置为离线
                     self.isOnline = false
                     self.reconnectAfterDelay()
                 }
@@ -93,10 +95,13 @@ public final class MonitorViewModel: ObservableObject {
     private func startHeartbeat() {
         pingTimer?.invalidate()
         pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.webSocketTask?.sendPing { error in
-                if error != nil {
-                    Task { @MainActor [weak self] in
-                        self?.isOnline = false
+            Task { @MainActor [weak self] in
+                guard let self = self, let task = self.webSocketTask else { return }
+                task.sendPing { error in
+                    if error != nil {
+                        Task { @MainActor [weak self] in
+                            self?.isOnline = false
+                        }
                     }
                 }
             }
@@ -106,7 +111,9 @@ public final class MonitorViewModel: ObservableObject {
     private func reconnectAfterDelay() {
         disconnect()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            self?.connectWebSocket()
+            Task { @MainActor [weak self] in
+                self?.connectWebSocket()
+            }
         }
     }
 
