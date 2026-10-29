@@ -36,7 +36,7 @@ public struct MetricsPayload: Codable {
     public let totalTxBytes: UInt64
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
-    public let processCount: Int           // 新增：系统总进程数
+    public let processCount: Int
     public let topProcesses: [TopProcess]
     public let diskVolumes: [DiskVolumeInfo]
 }
@@ -53,15 +53,23 @@ public final class MetricsCollector {
     private var lastDiskWrite: UInt64 = 0
     private var lastDiskTime: Date = Date()
 
+    // 10 分钟低频缓存：磁盘空间与 SMART 状态
     private var lastDiskSpaceCheckTime: Date = .distantPast
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
+
+    // 5 秒中频缓存（核心优化）：避免每秒 Fork 子进程带来严重的内核负担
+    private var lastProcessCheckTime: Date = .distantPast
+    private var cachedTopProcesses: [TopProcess] = []
+    private var cachedProcessCount: Int = 0
+    private let processInterval: TimeInterval = 5.0
 
     public init() {
         _ = getCPUUsage()
         _ = getNetworkThroughput()
         _ = getDiskThroughput()
         _ = getDiskVolumesCached()
+        _ = getRealTopProcesses()
     }
 
     public func getCPUUsage() -> Double {
@@ -123,7 +131,10 @@ public final class MetricsCollector {
         var buf = [UInt64](repeating: 0, count: 4)
         var bufSize = buf.count * MemoryLayout<UInt64>.size
         if sysctlbyname("vm.swapusage", &buf, &bufSize, nil, 0) == 0 {
-            swapUsedMB = Int(buf[2] / (1024 * 1024))
+            // 安全防范：内核结构体长度校验，确保包含所需的交换数据字段
+            if buf.count >= 3 {
+                swapUsedMB = Int(buf[2] / (1024 * 1024))
+            }
         }
         return (Int(level), swapUsedMB)
     }
@@ -140,7 +151,9 @@ public final class MetricsCollector {
         var currentTx: UInt64 = 0
 
         buffer.withUnsafeBufferPointer { bufPtr in
-            var cursor = bufPtr.baseAddress!
+            // 安全校验：彻底杜绝 nil 解包引起的进程 Crash
+            guard let base = bufPtr.baseAddress else { return }
+            var cursor = base
             let end = cursor.advanced(by: len)
 
             while cursor < end {
@@ -296,8 +309,13 @@ public final class MetricsCollector {
         return map
     }
 
-    // 核心新增：提取系统当前总进程数
+    // 核心优化：5秒级缓存降频。守护进程不能被高频 Fork 拖垮
     public func getRealTopProcesses() -> (top: [TopProcess], processCount: Int) {
+        let now = Date()
+        if now.timeIntervalSince(lastProcessCheckTime) < processInterval && !cachedTopProcesses.isEmpty {
+            return (cachedTopProcesses, cachedProcessCount)
+        }
+
         let task = Process()
         task.launchPath = "/bin/ps"
         task.arguments = ["-Aceo", "%cpu,rss,comm", "-m"]
@@ -307,11 +325,12 @@ public final class MetricsCollector {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
 
-        guard let output = String(data: data, encoding: .utf8) else { return ([], 0) }
+        guard let output = String(data: data, encoding: .utf8) else { 
+            return (cachedTopProcesses, cachedProcessCount) 
+        }
+        
         var result: [TopProcess] = []
         let lines = output.components(separatedBy: "\n")
-        
-        // 减去表头和尾部的空行，得到真实进程总数
         let totalCount = max(0, lines.count - 2)
 
         for line in lines.dropFirst() {
@@ -331,6 +350,11 @@ public final class MetricsCollector {
                 }
             }
         }
+        
+        cachedTopProcesses = result
+        cachedProcessCount = totalCount
+        lastProcessCheckTime = now
+        
         return (result, totalCount)
     }
 
@@ -342,7 +366,7 @@ public final class MetricsCollector {
         let disk = getDiskThroughput()
         let temp = SMCReader.shared.getCPUTemperature()
         let power = SMCReader.shared.getSystemPower()
-        let processData = getRealTopProcesses()
+        let processData = getRealTopProcesses() // 现在每5秒才物理运算一次
         let volumes = getDiskVolumesCached()
 
         var load = [Double](repeating: 0.0, count: 3)
