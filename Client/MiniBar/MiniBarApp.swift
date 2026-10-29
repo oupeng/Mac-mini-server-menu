@@ -18,8 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // 同步锁死为 248pt，确保两端毫无遮挡且不抖动
-    private let fixedBarWidth: CGFloat = 248.0
+    // 同步锁死为 220pt 紧凑宽度
+    private let fixedBarWidth: CGFloat = 220.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         viewModel = MonitorViewModel()
