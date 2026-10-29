@@ -1,24 +1,27 @@
 name: Manual Build MiniMonitor
 
 on:
-  workflow_dispatch: # 唯一触发条件：仅手动在 GitHub 页面点击触发
+  workflow_dispatch: # 仅手动触发
 
 jobs:
   build-server:
     name: Build Mac mini Server (Catalina x86_64)
-    runs-on: macos-13 # 提供兼容 x86_64 的编译环境
+    runs-on: macos-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build minimonitord
+      - name: Build minimonitord (Target macOS 10.15)
         run: |
           cd Server
-          # 针对 macOS 10.15 纯 x86_64 架构编译
+          # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
           swift build -c release --triple x86_64-apple-macosx10.15
+          
           mkdir -p ../dist/server
           cp .build/x86_64-apple-macosx10.15/release/minimonitord ../dist/server/
-          cp com.user.minimonitor.plist ../dist/server/
+          if [ -f "com.user.minimonitor.plist" ]; then
+            cp com.user.minimonitor.plist ../dist/server/
+          fi
 
       - name: Upload Server Artifact
         uses: actions/upload-artifact@v4
@@ -33,18 +36,27 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build MiniBar MenuBar App
+      - name: Build MiniBar.app
         run: |
           cd Client
-          # 编译 Intel 架构 App
-          xcodebuild -scheme MiniBar \
-                     -configuration Release \
-                     -destination 'platform=macOS,arch=x86_64' \
-                     clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED=NO
+          # 编译 Intel x86_64 二进制 (MacBook Pro 2020)
+          swift build -c release --arch x86_64
+          
+          # 手动组装标准 macOS .app 目录结构
+          APP_BUNDLE="MiniBar.app"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          
+          # 拷贝编译好的可执行程序
+          cp .build/x86_64-apple-macosx/release/MiniBar "$APP_BUNDLE/Contents/MacOS/"
+          
+          # 拷贝 Info.plist
+          if [ -f "MiniBar/Info.plist" ]; then
+            cp MiniBar/Info.plist "$APP_BUNDLE/Contents/"
+          fi
           
           mkdir -p ../dist/client
-          # 将编译生成的 .app 归档打包
-          find ~/Library/Developer/Xcode/DerivedData -name "MiniBar.app" -exec cp -R {} ../dist/client/ \;
+          cp -R "$APP_BUNDLE" ../dist/client/
 
       - name: Upload Client Artifact
         uses: actions/upload-artifact@v4
