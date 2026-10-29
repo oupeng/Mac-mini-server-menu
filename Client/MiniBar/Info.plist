@@ -15,8 +15,16 @@
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
-    <true/> <!-- 关键：纯菜单栏常驻，不占 Dock 栏 -->
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- 关键配置：允许局域网直接进行 ws:// 明文传输，不受 ATS 限制 -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
