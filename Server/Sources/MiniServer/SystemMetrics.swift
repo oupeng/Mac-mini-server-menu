@@ -8,6 +8,16 @@ public struct TopProcess: Codable {
     public let memMB: Int
 }
 
+public struct DiskVolumeInfo: Codable, Identifiable {
+    public var id: String { mountPoint }
+    public let name: String
+    public let mountPoint: String
+    public let totalBytes: UInt64
+    public let freeBytes: UInt64
+    public let usedPercent: Double
+    public let smartStatus: String
+}
+
 public struct MetricsPayload: Codable {
     public let uptimeSeconds: Int
     public let loadAvg: [Double]
@@ -19,11 +29,12 @@ public struct MetricsPayload: Codable {
     public let memPercent: Double
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
-    public let totalRxBytes: UInt64 // 64位无溢出开机累计下载
-    public let totalTxBytes: UInt64 // 64位无溢出开机累计上传
+    public let totalRxBytes: UInt64
+    public let totalTxBytes: UInt64
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
     public let topProcesses: [TopProcess]
+    public let diskVolumes: [DiskVolumeInfo] // 新增：10分钟刷新的磁盘空间与SMART
 }
 
 public final class MetricsCollector {
@@ -36,10 +47,16 @@ public final class MetricsCollector {
     private var lastDiskWrite: UInt64 = 0
     private var lastDiskTime: Date = Date()
 
+    // 10 分钟 (600秒) 空间与 SMART 缓存
+    private var lastDiskSpaceCheckTime: Date = .distantPast
+    private var cachedDiskVolumes: [DiskVolumeInfo] = []
+    private let diskSpaceInterval: TimeInterval = 600
+
     public init() {
         _ = getCPUUsage()
         _ = getNetworkThroughput()
         _ = getDiskThroughput()
+        _ = getDiskVolumesCached()
     }
 
     public func getCPUUsage() -> Double {
@@ -90,7 +107,6 @@ public final class MetricsCollector {
         return (usedMB, totalMB, percent)
     }
 
-    // 核心重构：采用 sysctl NET_RT_IFLIST2 提取 64 位网卡计数器，杜绝 4GB 循环归零溢出
     public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64, totalRx: UInt64, totalTx: UInt64) {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
         var len: Int = 0
@@ -114,7 +130,6 @@ public final class MetricsCollector {
                     var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
                     if let _ = if_indextoname(UInt32(ifIndex), &nameBuf) {
                         let name = String(cString: nameBuf)
-                        // 锁定 en0 物理网卡
                         if name == "en0" {
                             currentRx = if2m.ifm_data.ifi_ibytes
                             currentTx = if2m.ifm_data.ifi_obytes
@@ -137,10 +152,8 @@ public final class MetricsCollector {
         return (rxSpeed, txSpeed, currentRx, currentTx)
     }
 
-    // 核心重构：遍历所有存储总线（内置 SSD + 外置 USB 硬盘 + 外置 Thunderbolt 盘）
     public func getDiskThroughput() -> (readSec: UInt64, writeSec: UInt64) {
         var diskList: io_iterator_t = 0
-        // 匹配所有块存储驱动（内部及外部全局覆盖）
         let match = IOServiceMatching("IOBlockStorageDriver")
         guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &diskList) == kIOReturnSuccess else {
             return (0, 0)
@@ -156,7 +169,6 @@ public final class MetricsCollector {
             if IORegistryEntryCreateCFProperties(drive, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
                let dict = props?.takeRetainedValue() as? [String: Any],
                let stats = dict["Statistics"] as? [String: Any] {
-                // 累计所有内置与外置介质的字节总数
                 totalRead += (stats["Bytes (Read)"] as? UInt64) ?? 0
                 totalWrite += (stats["Bytes (Write)"] as? UInt64) ?? 0
             }
@@ -175,7 +187,105 @@ public final class MetricsCollector {
         return (readSpeed, writeSpeed)
     }
 
-    // 真实动态获取按内存排序的 Top 10
+    // 核心新增：10分钟低频读取 VFS 缓存 + IOKit 静态 SMART 状态 (零唤醒零能耗)
+    public func getDiskVolumesCached() -> [DiskVolumeInfo] {
+        let now = Date()
+        if !cachedDiskVolumes.isEmpty && now.timeIntervalSince(lastDiskSpaceCheckTime) < diskSpaceInterval {
+            return cachedDiskVolumes
+        }
+
+        var mntbuf: UnsafeMutablePointer<statfs>?
+        let count = getmntinfo(&mntbuf, MNT_NOWAIT)
+        guard count > 0, let buffer = mntbuf else { return cachedDiskVolumes }
+
+        var results: [DiskVolumeInfo] = []
+
+        // 读取系统已缓存的 SMART 字典映射
+        let smartMap = getCachedSmartStatusMap()
+
+        for i in 0..<Int(count) {
+            let fs = buffer[i]
+            let mntOn = withUnsafePointer(to: fs.f_mntonname) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+            }
+            let mntFrom = withUnsafePointer(to: fs.f_mntfromname) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+            }
+
+            // 智能过滤：只保留根目录 "/" 与用户外接卷 "/Volumes/*"
+            if mntOn == "/" || mntOn.hasPrefix("/Volumes/") {
+                // 排除系统内部的 VM, Preboot, Recovery 临时快照卷
+                if mntOn.contains("Preboot") || mntOn.contains("Recovery") || mntOn.contains("VM") {
+                    continue
+                }
+
+                let blockSize = UInt64(fs.f_bsize)
+                let totalBytes = UInt64(fs.f_blocks) * blockSize
+                let freeBytes = UInt64(fs.f_bavail) * blockSize
+
+                if totalBytes > 0 {
+                    let usedBytes = totalBytes > freeBytes ? totalBytes - freeBytes : 0
+                    let percent = (Double(usedBytes) / Double(totalBytes)) * 100.0
+
+                    var displayName = URL(fileURLWithPath: mntOn).lastPathComponent
+                    if mntOn == "/" { displayName = "Macintosh HD" }
+
+                    // 从 /dev/disk1s1 匹配父磁盘标识 disk1
+                    let devName = URL(fileURLWithPath: mntFrom).lastPathComponent
+                    let bsdParent = devName.components(separatedBy: "s").first ?? devName
+                    let smart = smartMap[bsdParent] ?? "良好"
+
+                    results.append(DiskVolumeInfo(
+                        name: displayName,
+                        mountPoint: mntOn,
+                        totalBytes: totalBytes,
+                        freeBytes: freeBytes,
+                        usedPercent: percent,
+                        smartStatus: smart
+                    ))
+                }
+            }
+        }
+
+        cachedDiskVolumes = results
+        lastDiskSpaceCheckTime = now
+        return results
+    }
+
+    // 从 IOKit 注册表抓取系统现成的 SMART 缓存状态 (绝不唤醒磁盘)
+    private func getCachedSmartStatusMap() -> [String: String] {
+        var map: [String: String] = [:]
+        var iter: io_iterator_t = 0
+        let match = IOServiceMatching("IOBlockStorageDevice")
+        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &iter) == kIOReturnSuccess else {
+            return map
+        }
+        defer { IOObjectRelease(iter) }
+
+        var dev = IOIteratorNext(iter)
+        while dev != 0 {
+            var props: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(dev, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+               let dict = props?.takeRetainedValue() as? [String: Any],
+               let bsdName = dict["BSD Name"] as? String {
+                if let smart = dict["SMART Status"] as? String {
+                    if smart == "Verified" {
+                        map[bsdName] = "良好"
+                    } else if smart == "Failing" {
+                        map[bsdName] = "故障"
+                    } else {
+                        map[bsdName] = "不支持"
+                    }
+                } else {
+                    map[bsdName] = "不支持"
+                }
+            }
+            IOObjectRelease(dev)
+            dev = IOIteratorNext(iter)
+        }
+        return map
+    }
+
     public func getRealTopProcesses() -> [TopProcess] {
         let task = Process()
         task.launchPath = "/bin/ps"
@@ -219,6 +329,7 @@ public final class MetricsCollector {
         let temp = SMCReader.shared.getCPUTemperature()
         let power = SMCReader.shared.getSystemPower()
         let topProcs = getRealTopProcesses()
+        let volumes = getDiskVolumesCached()
 
         var load = [Double](repeating: 0.0, count: 3)
         getloadavg(&load, 3)
@@ -245,7 +356,8 @@ public final class MetricsCollector {
             totalTxBytes: net.totalTx,
             diskReadBytesPerSec: disk.readSec,
             diskWriteBytesPerSec: disk.writeSec,
-            topProcesses: topProcs
+            topProcesses: topProcs,
+            diskVolumes: volumes
         )
     }
 }
