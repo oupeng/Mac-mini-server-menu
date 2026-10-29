@@ -3,14 +3,14 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    // 给定充足且绝对锁死的 248pt 宽度，杜绝一切裁切与抖动
-    private let totalWidth: CGFloat = 248.0
+    // 图表方正化后的优化定宽
+    private let totalWidth: CGFloat = 220.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
         HStack(spacing: 5) {
             if vm.isOnline, let d = vm.data {
-                // 1. 温控与功耗 (分配 54pt，左侧留出充足安全边距)
+                // 1. 温控与功耗 (定宽 52pt)
                 HStack(spacing: 3) {
                     Text("\(Int(d.cpuTemp))°")
                         .font(.system(size: 11.5, weight: .semibold, design: .rounded))
@@ -20,11 +20,11 @@ struct MenuBarStatusView: View {
                         .foregroundColor(.white.opacity(0.65))
                 }
                 .monospacedDigit()
-                .frame(width: 54, alignment: .center)
+                .frame(width: 52, alignment: .center)
 
                 WhiteDivider()
 
-                // 2. 实时网络吞吐 (分配 52pt，等宽数字)
+                // 2. 实时网络吞吐 (定宽 50pt，等宽数字)
                 VStack(alignment: .trailing, spacing: 0) {
                     HStack(spacing: 2) {
                         Text("↓")
@@ -43,47 +43,50 @@ struct MenuBarStatusView: View {
                 }
                 .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                 .monospacedDigit()
-                .frame(width: 52, alignment: .trailing)
+                .frame(width: 50, alignment: .trailing)
 
                 WhiteDivider()
 
-                // 3. 内存能量条 (分配 22pt)
+                // 3. 内存能量条 (超 90% 变黄告警，低于 90% 恢复纯白)
+                let isMemAlert = d.memPercent >= 90.0
+                let memColor: Color = isMemAlert ? .yellow : .white
+
                 HStack(spacing: 3) {
                     Text("M")
                         .font(.system(size: 8, weight: .heavy))
-                        .foregroundColor(.white.opacity(0.6))
-                    WhiteCapsuleBar(ratio: d.memPercent / 100.0)
-                        .frame(width: 5, height: 14)
+                        .foregroundColor(isMemAlert ? .yellow : .white.opacity(0.6))
+                    WhiteCapsuleBar(ratio: d.memPercent / 100.0, tint: memColor)
+                        .frame(width: 5, height: 15)
                 }
-                .frame(width: 22, alignment: .center)
+                .frame(width: 20, alignment: .center)
 
                 WhiteDivider()
 
-                // 4. CPU 实时曲线 (分配 38pt)
+                // 4. CPU 实时曲线 (宽高相同：15x15 正方形)
                 HStack(spacing: 3) {
                     Text("C")
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.white.opacity(0.6))
-                    WhiteAreaSparkline(data: vm.cpuHistory)
-                        .frame(width: 28, height: 14)
+                    SquareAreaSparkline(data: vm.cpuHistory)
+                        .frame(width: 15, height: 15)
                 }
-                .frame(width: 38, alignment: .center)
+                .frame(width: 25, alignment: .center)
 
                 WhiteDivider()
 
-                // 5. 磁盘活动 (分配 34pt，右侧留足边距防遮挡)
+                // 5. 磁盘活动 (宽高相同：15x15 正方形)
                 HStack(spacing: 3) {
                     Image(systemName: "internaldrive")
                         .font(.system(size: 9.5))
                         .foregroundColor(.white.opacity(0.6))
 
-                    WhiteDualSparkline(
+                    SquareDualSparkline(
                         topData: vm.diskReadHistory,
                         bottomData: vm.diskWriteHistory
                     )
-                    .frame(width: 18, height: 14)
+                    .frame(width: 15, height: 15)
                 }
-                .frame(width: 34, alignment: .center)
+                .frame(width: 28, alignment: .center)
             } else {
                 HStack(spacing: 5) {
                     Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
@@ -96,7 +99,7 @@ struct MenuBarStatusView: View {
                 .frame(width: totalWidth, alignment: .center)
             }
         }
-        .padding(.horizontal, 4) // 核心：左右内边距留足，避免紧贴边缘被削切
+        .padding(.horizontal, 4)
         .frame(width: totalWidth, height: barHeight)
     }
 
@@ -118,26 +121,28 @@ struct WhiteDivider: View {
     }
 }
 
-struct WhiteAreaSparkline: View {
+// MARK: - 正方形矢量图表 (宽高相同 15x15)
+
+/// CPU 正方形面积图 (15x15)
+struct SquareAreaSparkline: View {
     let data: [Double]
-    private let width: CGFloat = 28.0
-    private let height: CGFloat = 14.0
+    private let size: CGFloat = 15.0
 
     var body: some View {
         let count = data.count
-        let step = count > 1 ? width / CGFloat(count - 1) : width
+        let step = count > 1 ? size / CGFloat(count - 1) : size
 
         ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(Color.white.opacity(0.12))
 
             Path { p in
-                p.move(to: CGPoint(x: 0, y: height))
+                p.move(to: CGPoint(x: 0, y: size))
                 for (i, val) in data.enumerated() {
-                    let y = height - (CGFloat(val) * (height - 2)) - 1
-                    p.addLine(to: CGPoint(x: CGFloat(i) * step, y: max(0, min(height, y))))
+                    let y = size - (CGFloat(val) * (size - 2)) - 1
+                    p.addLine(to: CGPoint(x: CGFloat(i) * step, y: max(0, min(size, y))))
                 }
-                p.addLine(to: CGPoint(x: width, y: height))
+                p.addLine(to: CGPoint(x: size, y: size))
                 p.closeSubpath()
             }
             .fill(LinearGradient(colors: [Color.white.opacity(0.45), Color.white.opacity(0.1)], startPoint: .top, endPoint: .bottom))
@@ -145,33 +150,34 @@ struct WhiteAreaSparkline: View {
             Path { p in
                 for (i, val) in data.enumerated() {
                     let x = CGFloat(i) * step
-                    let y = height - (CGFloat(val) * (height - 2)) - 1
+                    let y = size - (CGFloat(val) * (size - 2)) - 1
                     if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
                 }
             }
             .stroke(Color.white, lineWidth: 1.0)
         }
-        .frame(width: width, height: height)
+        .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 1.5))
     }
 }
 
-struct WhiteDualSparkline: View {
+/// 磁盘正方形双向图 (15x15)
+struct SquareDualSparkline: View {
     let topData: [Double]
     let bottomData: [Double]
+    private let size: CGFloat = 15.0
 
     var body: some View {
-        Canvas { context, size in
-            let w = size.width
-            let h = size.height
-            let midY = h / 2.0
-            let step = topData.count > 1 ? w / CGFloat(topData.count - 1) : w
+        let midY: CGFloat = size / 2.0
 
-            context.fill(Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 1.5), with: .color(Color.white.opacity(0.12)))
+        Canvas { context, _ in
+            let step = topData.count > 1 ? size / CGFloat(topData.count - 1) : size
+
+            context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: size, height: size), cornerRadius: 1.5), with: .color(Color.white.opacity(0.12)))
 
             var midLine = Path()
             midLine.move(to: CGPoint(x: 0, y: midY))
-            midLine.addLine(to: CGPoint(x: w, y: midY))
+            midLine.addLine(to: CGPoint(x: size, y: midY))
             context.stroke(midLine, with: .color(Color.white.opacity(0.25)), lineWidth: 0.5)
 
             var topPath = Path()
@@ -190,22 +196,25 @@ struct WhiteDualSparkline: View {
             }
             context.stroke(bottomPath, with: .color(Color.white.opacity(0.7)), lineWidth: 1.0)
         }
+        .frame(width: size, height: size)
     }
 }
 
+/// 垂直能量胶囊 (支持动态警示色切换)
 struct WhiteCapsuleBar: View {
     let ratio: Double
+    var tint: Color = .white
     private let width: CGFloat = 5.0
-    private let height: CGFloat = 14.0
+    private let height: CGFloat = 15.0
 
     var body: some View {
         let fillH = max(2, height * CGFloat(min(max(ratio, 0), 1)))
 
         ZStack(alignment: .bottom) {
             Capsule()
-                .fill(Color.white.opacity(0.18))
+                .fill(tint.opacity(0.18))
             Capsule()
-                .fill(Color.white)
+                .fill(tint)
                 .frame(width: width, height: fillH)
         }
         .frame(width: width, height: height)
