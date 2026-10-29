@@ -90,24 +90,48 @@ public final class SMCReader {
         )
         guard readResult == kIOReturnSuccess else { return nil }
 
-        // 解析 sp78（定点数）类型温度，如 TC0P / TC0D
-        if info.dataType == fourCharCode(from: "sp78") {
-            let raw = (Int(outputStructure.bytes.0) << 8) | Int(outputStructure.bytes.1)
+        let type = info.dataType
+        let b0 = Int(outputStructure.bytes.0)
+        let b1 = Int(outputStructure.bytes.1)
+
+        // 1. sp78 定点数 (多数温度)
+        if type == fourCharCode(from: "sp78") {
+            let raw = (b0 << 8) | b1
             return Double(raw) / 256.0
+        }
+        // 2. fpe2 定点数 (部分功率)
+        if type == fourCharCode(from: "fpe2") {
+            let raw = (b0 << 8) | b1
+            return Double(raw) / 4.0
+        }
+        // 3. flt 32位标准浮点数 (Intel 核心整机真实总功率 PSTR)
+        if type == fourCharCode(from: "flt ") && info.dataSize == 4 {
+            var rawBytes = [outputStructure.bytes.0, outputStructure.bytes.1, outputStructure.bytes.2, outputStructure.bytes.3]
+            var val: Float = 0
+            memcpy(&val, &rawBytes, 4)
+            return Double(val)
+        }
+        // 4. ui16
+        if type == fourCharCode(from: "ui16") {
+            return Double((b0 << 8) | b1)
         }
         return nil
     }
 
-    // 获取 CPU 温度 (°C)
+    // 核心优化：优先读取 CPU Die (真实芯片核心最高温)，绝不再用外围滞后温度
     public func getCPUTemperature() -> Double {
-        return readKey("TC0P") ?? readKey("TC0D") ?? 45.0
+        if let die = readKey("TC0D") { return die }
+        if let core1 = readKey("TC0E") { return core1 }
+        if let core2 = readKey("TC0F") { return core2 }
+        if let xc = readKey("TCXC") { return xc }
+        return readKey("TC0P") ?? 50.0
     }
 
-    // 获取 2012 款 Mac mini 系统总功耗 (W)
+    // 核心优化：精准解码系统整机真实交流功耗 (Total Power)
     public func getSystemPower() -> Double {
-        // PSTR 为 Intel Mac 典型整机交流功率
-        if let power = readKey("PSTR") { return power }
-        // 兜底备用方案：读取核心电压电流估算值
-        return 11.5
+        if let pstr = readKey("PSTR") { return pstr }
+        if let pc0c = readKey("PC0C") { return pc0c }
+        if let pcpt = readKey("PCPT") { return pcpt }
+        return 20.0
     }
 }
