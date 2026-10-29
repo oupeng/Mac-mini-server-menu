@@ -20,7 +20,7 @@ public struct MetricsData: Codable {
     public let memUsedMB: Int
     public let memTotalMB: Int
     public let memPercent: Double
-    public let memPressurePercent: Double? // 新增：用于绘制面积图高度
+    public let memPressurePercent: Double?
     public let memPressureLevel: Int?
     public let swapUsedMB: Int?
     public let netRxBytesPerSec: UInt64
@@ -29,6 +29,7 @@ public struct MetricsData: Codable {
     public let totalTxBytes: UInt64?
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
+    public let processCount: Int?        // 新增：进程总数
     public let topProcesses: [TopProcessItem]
     public let diskVolumes: [DiskVolumeItem]?
 }
@@ -49,7 +50,7 @@ public final class MonitorViewModel: ObservableObject {
     @Published public var isOnline: Bool = false
 
     @Published public var cpuHistory: [Double] = Array(repeating: 0.0, count: 18)
-    @Published public var memPressureHistory: [Double] = Array(repeating: 0.0, count: 18) // 新增：内存压力波动历史
+    @Published public var memPressureHistory: [Double] = Array(repeating: 0.0, count: 18)
     @Published public var netRxHistory: [Double] = Array(repeating: 0.0, count: 18)
     @Published public var netTxHistory: [Double] = Array(repeating: 0.0, count: 18)
     @Published public var diskReadHistory: [Double] = Array(repeating: 0.0, count: 18)
@@ -121,7 +122,7 @@ public final class MonitorViewModel: ObservableObject {
             self.data = decoded
 
             updateHistory(&cpuHistory, newRatio: decoded.cpuUsage / 100.0)
-            updateHistory(&memPressureHistory, newRatio: (decoded.memPressurePercent ?? 0.0) / 100.0) // 记录压力
+            updateHistory(&memPressureHistory, newRatio: (decoded.memPressurePercent ?? 0.0) / 100.0)
             updateHistory(&netRxHistory, newRatio: min(Double(decoded.netRxBytesPerSec) / (1024 * 1024 * 10), 1.0))
             updateHistory(&netTxHistory, newRatio: min(Double(decoded.netTxBytesPerSec) / (1024 * 1024 * 5), 1.0))
             updateHistory(&diskReadHistory, newRatio: min(Double(decoded.diskReadBytesPerSec) / (1024 * 1024 * 20), 1.0))
