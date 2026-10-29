@@ -7,7 +7,6 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // 顶栏：服务器标题、运行时间与设置按钮
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
@@ -28,7 +27,6 @@ struct DetailPopoverView: View {
             if showingSettings {
                 SettingsView(vm: vm, isPresented: $showingSettings)
             } else if let d = vm.data, vm.isOnline {
-                // 核心指标卡片区
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
                         MetricCard(
@@ -44,21 +42,20 @@ struct DetailPopoverView: View {
                     }
 
                     HStack(spacing: 10) {
-                        // 专为网络打造的无截断卡片：清晰展示实时速率 + 累计总吞吐
+                        // 网络卡片：速率无小数点，累计流量真实无溢出
                         VStack(alignment: .leading, spacing: 4) {
                             Text("物理网络吞吐 (en0)")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                             
                             HStack(spacing: 6) {
-                                Text("↓ \(formatDetailedSpeed(d.netRxBytesPerSec))")
+                                Text("↓ \(formatDetailedSpeedNoDecimal(d.netRxBytesPerSec))")
                                     .font(.system(size: 12, weight: .bold, design: .rounded))
-                                Text("↑ \(formatDetailedSpeed(d.netTxBytesPerSec))")
+                                Text("↑ \(formatDetailedSpeedNoDecimal(d.netTxBytesPerSec))")
                                     .font(.system(size: 10, weight: .medium, design: .rounded))
                                     .foregroundColor(.secondary)
                             }
                             
-                            // 开机累计总吞吐量独立行展示，绝不省略号截断
                             Text("累计: ↓\(formatTotalBytes(d.totalRxBytes ?? 0))  ↑\(formatTotalBytes(d.totalTxBytes ?? 0))")
                                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                                 .foregroundColor(.secondary)
@@ -67,16 +64,16 @@ struct DetailPopoverView: View {
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                        // 磁盘活动卡片
+                        // 磁盘卡片：无小数点
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("磁盘活动")
+                            Text("全局磁盘活动 (所有介质)")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                             
-                            Text("R: \(formatDetailedSpeed(d.diskReadBytesPerSec))")
+                            Text("R: \(formatDetailedSpeedNoDecimal(d.diskReadBytesPerSec))")
                                 .font(.system(size: 12, weight: .bold, design: .rounded))
                             
-                            Text("W: \(formatDetailedSpeed(d.diskWriteBytesPerSec))")
+                            Text("W: \(formatDetailedSpeedNoDecimal(d.diskWriteBytesPerSec))")
                                 .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
@@ -86,7 +83,6 @@ struct DetailPopoverView: View {
                     }
                 }
 
-                // 完整铺开 10 个进程（以内存占用排序，无滚动条截断）
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("活跃进程 (按内存排序 Top 10)")
@@ -102,7 +98,6 @@ struct DetailPopoverView: View {
                             .frame(width: 45, alignment: .trailing)
                     }
 
-                    // 10 个进程完整直接平铺排布
                     VStack(spacing: 5) {
                         ForEach(d.topProcesses) { proc in
                             HStack {
@@ -124,7 +119,6 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                // 快捷运维工具
                 HStack(spacing: 8) {
                     Button("打开屏幕镜像 (VNC)") {
                         if let url = URL(string: "vnc://\(vm.serverIP)") {
@@ -152,7 +146,7 @@ struct DetailPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: 340) // 宽度加宽至 340pt，让所有文字与 10 个进程从容展开
+        .frame(width: 340)
     }
 
     private func formatUptime(_ seconds: Int) -> String {
@@ -161,10 +155,11 @@ struct DetailPopoverView: View {
         return "\(days)天\(hours)时"
     }
 
-    private func formatDetailedSpeed(_ bytes: UInt64) -> String {
+    // 核心要求：去除速率的小数点
+    private func formatDetailedSpeedNoDecimal(_ bytes: UInt64) -> String {
         let kb = Double(bytes) / 1024.0
-        if kb < 1024 { return String(format: "%.1f KB/s", kb) }
-        return String(format: "%.2f MB/s", kb / 1024.0)
+        if kb < 1024 { return String(format: "%.0f KB/s", kb) }
+        return String(format: "%.0f MB/s", kb / 1024.0)
     }
 
     private func formatTotalBytes(_ bytes: UInt64) -> String {
