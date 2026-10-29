@@ -1,13 +1,21 @@
-// HTTPService.swift
 import Foundation
 import Network
 
-public final class HTTPService {
+public final class WebSocketService {
     private let listener: NWListener
     private let collector = MetricsCollector()
+    private var activeConnections: [NWConnection] = []
+    private var pushTimer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "com.miniserver.ws", qos: .utility)
 
     public init(port: UInt16 = 29876) throws {
-        self.listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+        // 配置原生 WebSocket 协议栈 (macOS 10.15+ 原生支持)
+        let wsOptions = NWProtocolWebSocket.Options()
+        let tcpOptions = NWProtocolTCP.Options()
+        let params = NWParameters(tls: nil, tcp: tcpOptions)
+        params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+
+        self.listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
     }
 
     public func start() {
@@ -16,38 +24,48 @@ public final class HTTPService {
         }
         listener.stateUpdateHandler = { state in
             if state == .ready {
-                print("[MiniServer] 监听端口 29876 就绪 (macOS 10.15 Catalina)")
+                print("[MiniServer] WebSocket 监听就绪，端口: 29876 (macOS 10.15)")
             }
         }
-        listener.start(queue: .global(qos: .utility))
+        listener.start(queue: queue)
+        startBroadcasting()
     }
 
     private func handleConnection(_ connection: NWConnection) {
-        connection.start(queue: .global(qos: .utility))
-        connection.receive(minimumIncompleteLength: 4, maximumLength: 1024) { [weak self] data, _, isComplete, _ in
-            guard let self = self, let _ = data else {
-                connection.cancel()
-                return
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self = self, let connection = connection else { return }
+            switch state {
+            case .ready:
+                self.queue.async { self.activeConnections.append(connection) }
+            case .failed, .cancelled:
+                self.queue.async {
+                    self.activeConnections.removeAll { $0 === connection }
+                }
+            default:
+                break
             }
-
-            let payload = self.collector.collectPayload()
-            guard let jsonData = try? JSONEncoder().encode(payload) else {
-                connection.cancel()
-                return
-            }
-
-            var header = "HTTP/1.1 200 OK\r\n"
-            header += "Content-Type: application/json; charset=utf-8\r\n"
-            header += "Access-Control-Allow-Origin: *\r\n"
-            header += "Content-Length: \(jsonData.count)\r\n"
-            header += "Connection: close\r\n\r\n"
-
-            var responseData = header.data(using: .utf8)!
-            responseData.append(jsonData)
-
-            connection.send(content: responseData, completion: .contentProcessed({ _ in
-                connection.cancel()
-            }))
         }
+        connection.start(queue: queue)
+    }
+
+    // 每秒主动向所有连接的 MacBook Pro 推送最新硬件指标
+    private func startBroadcasting() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self = self, !self.activeConnections.isEmpty else { return }
+            let payload = self.collector.collectPayload()
+            guard let jsonData = try? JSONEncoder().encode(payload) else { return }
+
+            // 原生打包成 WebSocket 文本帧
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+            let context = NWConnection.ContentContext(identifier: "metrics", metadata: [metadata])
+
+            for conn in self.activeConnections {
+                conn.send(content: jsonData, contentContext: context, isComplete: true, completion: .contentProcessed({ _ in }))
+            }
+        }
+        timer.resume()
+        self.pushTimer = timer
     }
 }
