@@ -1,4 +1,10 @@
-build-server:
+name: Manual Build MiniMonitor
+
+on:
+  workflow_dispatch: # 仅手动在 GitHub 页面点击触发
+
+jobs:
+  build-server:
     name: Build Mac mini Server (Catalina x86_64)
     runs-on: macos-latest
     steps:
@@ -11,11 +17,11 @@ build-server:
           # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
           swift build -c release --triple x86_64-apple-macosx10.15
           
-          # 获取官方标准的二进制输出路径并拷贝
+          # 自动获取官方标准产物路径，避免硬编码路径报错
           BIN_PATH=$(swift build -c release --triple x86_64-apple-macosx10.15 --show-bin-path)
+          
           mkdir -p ../dist/server
           cp "$BIN_PATH/minimonitord" ../dist/server/
-          
           if [ -f "com.user.minimonitor.plist" ]; then
             cp com.user.minimonitor.plist ../dist/server/
           fi
@@ -25,3 +31,41 @@ build-server:
         with:
           name: MacMini-Server-Catalina
           path: dist/server/
+
+  build-client:
+    name: Build MacBook Pro Client (macOS 26 x86_64)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build MiniBar.app
+        run: |
+          cd Client
+          # 针对 MacBook Pro 2020 (Intel x86_64) 编译
+          swift build -c release --arch x86_64
+          
+          # 自动获取 Client 产物路径
+          BIN_PATH=$(swift build -c release --arch x86_64 --show-bin-path)
+          
+          # 组装原生 macOS .app Bundle 目录结构
+          APP_BUNDLE="MiniBar.app"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          
+          # 拷贝编译好的二进制程序
+          cp "$BIN_PATH/MiniBar" "$APP_BUNDLE/Contents/MacOS/"
+          
+          # 拷贝 Info.plist (实现纯菜单栏常驻、不进 Dock 栏)
+          if [ -f "MiniBar/Info.plist" ]; then
+            cp MiniBar/Info.plist "$APP_BUNDLE/Contents/"
+          fi
+          
+          mkdir -p ../dist/client
+          cp -R "$APP_BUNDLE" ../dist/client/
+
+      - name: Upload Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacBook-MiniBar-Client
+          path: dist/client/
