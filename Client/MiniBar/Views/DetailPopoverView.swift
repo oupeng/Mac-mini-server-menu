@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DetailPopoverView: View {
     @ObservedObject var vm: MonitorViewModel
@@ -6,19 +7,20 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // 顶栏：服务器标题与运维按钮
+            // 顶栏：服务器标题、运行时间与设置按钮
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
-                if let d = vm.data {
+                if let d = vm.data, !showingSettings {
                     Text("运行: \(formatUptime(d.uptimeSeconds))")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
                 Button(action: { showingSettings.toggle() }) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 12))
+                    Image(systemName: showingSettings ? "xmark.circle.fill" : "gearshape")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
             }
@@ -38,7 +40,7 @@ struct DetailPopoverView: View {
                     }
                 }
 
-                // Top 进程排行榜卡片
+                // Top 活跃进程
                 VStack(alignment: .leading, spacing: 6) {
                     Text("活跃进程")
                         .font(.system(size: 11, weight: .medium))
@@ -82,7 +84,6 @@ struct DetailPopoverView: View {
                     Text("无法连接至 Mac mini (WebSocket)")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.red)
-                    // 此处改为 connectWebSocket
                     Button("重新连接") { vm.connectWebSocket() }
                         .controlSize(.small)
                 }
@@ -90,7 +91,7 @@ struct DetailPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: 310)
+        .frame(width: 320)
     }
 
     private func formatUptime(_ seconds: Int) -> String {
@@ -128,31 +129,60 @@ struct MetricCard: View {
     }
 }
 
+// MARK: - 设置面板（集成退出应用功能）
 struct SettingsView: View {
     @ObservedObject var vm: MonitorViewModel
     @Binding var isPresented: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Mac mini 局域网设置")
                 .font(.system(size: 12, weight: .bold))
+
+            VStack(spacing: 8) {
+                HStack {
+                    Text("固定 IP:")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .frame(width: 55, alignment: .trailing)
+                    TextField("IP", text: $vm.serverIP)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+
+                HStack {
+                    Text("服务端口:")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .frame(width: 55, alignment: .trailing)
+                    TextField("Port", value: $vm.serverPort, formatter: NumberFormatter())
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+            }
+
+            Divider().opacity(0.4)
+
+            // 操作按键区
             HStack {
-                Text("固定 IP:")
-                TextField("IP", text: $vm.serverIP)
-                    .textFieldStyle(.roundedBorder)
+                Button("保存并重连") {
+                    isPresented = false
+                    vm.connectWebSocket()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Spacer()
+
+                // 原生安全退出按钮
+                Button(role: .destructive) {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    Label("退出 MiniBar", systemImage: "power")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            HStack {
-                Text("服务端口:")
-                TextField("Port", value: $vm.serverPort, formatter: NumberFormatter())
-                    .textFieldStyle(.roundedBorder)
-            }
-            Button("保存并连接") {
-                isPresented = false
-                // 此处改为 connectWebSocket
-                vm.connectWebSocket()
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
         }
         .padding(6)
     }
