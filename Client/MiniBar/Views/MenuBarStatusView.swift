@@ -3,14 +3,14 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    // 图表加宽为 2 倍后的完美定宽
-    private let totalWidth: CGFloat = 250.0
+    // 缩紧网速虚位后的完美定宽
+    private let totalWidth: CGFloat = 236.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
         HStack(spacing: 5) {
             if vm.isOnline, let d = vm.data {
-                // 1. 温控与功耗 (定宽 52pt)
+                // 1. 温控与功耗 (读真实 CPU Die 与总功率)
                 HStack(spacing: 3) {
                     Text("\(Int(d.cpuTemp))°")
                         .font(.system(size: 11.5, weight: .semibold, design: .rounded))
@@ -24,16 +24,16 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 2. 实时网络吞吐 (无小数点，等宽排版，定宽 50pt)
+                // 2. 实时网络吞吐 (缩紧至 38pt，紧贴分隔线，彻底消除左侧空白)
                 VStack(alignment: .trailing, spacing: 0) {
-                    HStack(spacing: 2) {
+                    HStack(spacing: 1) {
                         Text("↓")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
                         Text(formatSpeedNoDecimal(d.netRxBytesPerSec))
                             .foregroundColor(.white)
                     }
-                    HStack(spacing: 2) {
+                    HStack(spacing: 1) {
                         Text("↑")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
@@ -43,11 +43,11 @@ struct MenuBarStatusView: View {
                 }
                 .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                 .monospacedDigit()
-                .frame(width: 50, alignment: .trailing)
+                .frame(width: 38, alignment: .trailing)
 
                 WhiteDivider()
 
-                // 3. 内存能量条 (超 90% 变黄告警)
+                // 3. 内存能量条 (超 90% 变黄)
                 let isMemAlert = d.memPercent >= 90.0
                 let memColor: Color = isMemAlert ? .yellow : .white
 
@@ -62,7 +62,7 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 4. CPU 实时曲线 (2 倍宽度：30x15)
+                // 4. CPU 实时曲线 (2 倍宽：30x15)
                 HStack(spacing: 3) {
                     Text("C")
                         .font(.system(size: 8, weight: .heavy))
@@ -74,7 +74,7 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 5. 磁盘活动 (2 倍宽度：30x15，含内置及所有外接盘)
+                // 5. 磁盘活动 (2 倍宽：30x15)
                 HStack(spacing: 3) {
                     Image(systemName: "internaldrive")
                         .font(.system(size: 9.5))
@@ -103,7 +103,6 @@ struct MenuBarStatusView: View {
         .frame(width: totalWidth, height: barHeight)
     }
 
-    // 核心要求：去除小数点后的显示
     private func formatSpeedNoDecimal(_ bytes: UInt64) -> String {
         let kb = Double(bytes) / 1024.0
         if kb < 1000 {
@@ -122,9 +121,6 @@ struct WhiteDivider: View {
     }
 }
 
-// MARK: - 2 倍宽度矢量图表 (30x15)
-
-/// CPU 2 倍宽面积图 (30x15)
 struct WideAreaSparkline: View {
     let data: [Double]
     private let width: CGFloat = 30.0
@@ -163,7 +159,6 @@ struct WideAreaSparkline: View {
     }
 }
 
-/// 磁盘 2 倍宽双向图 (30x15)
 struct WideDualSparkline: View {
     let topData: [Double]
     let bottomData: [Double]
