@@ -29,21 +29,22 @@ struct DetailPopoverView: View {
             } else if let d = vm.data, vm.isOnline {
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
+                        // 核心修改：明确三行文本结构，利用进程数和平均负载填充，让卡片高度严丝合缝对齐
+                        let loadStr = String(format: "%.2f, %.2f, %.2f", d.loadAvg[0], d.loadAvg[1], d.loadAvg[2])
                         MetricCard(
                             title: "CPU 负荷",
                             value: String(format: "%.1f%%", d.cpuUsage),
-                            subtitle: "\(Int(d.cpuTemp))°C  \(Int(d.powerWatts))W"
+                            subtitle: "温控: \(Int(d.cpuTemp))°C  \(Int(d.powerWatts))W\n进程: \(d.processCount ?? 0) 个\n负载: \(loadStr)"
                         )
                         
-                        // 显示精准内存占用，及括号内真实的内存压力百分比
                         let pressureLevel = d.memPressureLevel ?? 1
-                        let pressureStr = pressureLevel >= 4 ? "危险 (Critical)" : (pressureLevel >= 2 ? "警告 (Warning)" : "正常 (Normal)")
+                        let pressureStr = pressureLevel >= 4 ? "危险" : (pressureLevel >= 2 ? "警告" : "正常")
                         let pPct = Int(d.memPressurePercent ?? 0)
                         
                         MetricCard(
                             title: "物理内存与压力",
                             value: String(format: "%.1f%%", d.memPercent),
-                            subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G\n压力: \(pressureStr) (\(pPct)%)  已交换: \(d.swapUsedMB ?? 0)M"
+                            subtitle: "容量: \(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G\n压力: \(pressureStr) (\(pPct)%)\n交换: \(d.swapUsedMB ?? 0) MB"
                         )
                     }
 
@@ -65,7 +66,7 @@ struct DetailPopoverView: View {
                                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
@@ -81,7 +82,7 @@ struct DetailPopoverView: View {
                                 .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
                     }
@@ -176,17 +177,6 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                // 核心修改：仅保留屏幕镜像按钮，并采用 Bonjour 内网域名 (.local)
-                HStack {
-                    Spacer()
-                    Button("打开屏幕镜像") {
-                        if let url = URL(string: "vnc://DPHomedeMac-mini.local") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .controlSize(.small)
-                    Spacer()
-                }
             } else {
                 VStack(spacing: 8) {
                     Text("无法连接至 Mac mini (WebSocket)")
@@ -251,19 +241,21 @@ struct MetricCard: View {
     let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
             Text(value)
                 .font(.system(size: 13, weight: .bold, design: .rounded))
+            
+            // 将副标题排版规范化，无论几行都确保行距一致且置顶对齐
             Text(subtitle)
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundColor(.secondary)
-                .lineSpacing(2)
+                .lineSpacing(3)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
     }
 }
@@ -310,7 +302,7 @@ struct SettingsView: View {
                 .controlSize(.small)
 
                 Spacer()
-
+                
                 Button(role: .destructive) {
                     NSApplication.shared.terminate(nil)
                 } label: {
