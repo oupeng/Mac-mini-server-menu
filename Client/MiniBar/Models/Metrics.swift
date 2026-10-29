@@ -33,40 +33,87 @@ public final class MonitorViewModel: ObservableObject {
     @Published public var isOnline: Bool = false
     @Published public var cpuHistory: [Double] = Array(repeating: 0.0, count: 20)
 
-    private var timer: Timer?
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var pingTimer: Timer?
 
     public init() {
-        startPolling()
+        connectWebSocket()
     }
 
-    public func startPolling() {
-        timer?.invalidate()
-        fetch()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+    public func connectWebSocket() {
+        disconnect()
+
+        guard let url = URL(string: "ws://\(serverIP):\(serverPort)") else { return }
+        let session = URLSession(configuration: .default)
+        let task = session.webSocketTask(with: url)
+        self.webSocketTask = task
+        task.resume()
+
+        listenMessage()
+        startHeartbeat()
+    }
+
+    private func listenMessage() {
+        webSocketTask?.receive { [weak self] result in
             Task { @MainActor [weak self] in
-                self?.fetch()
+                guard let self = self else { return }
+                switch result {
+                case .success(let message):
+                    self.isOnline = true
+                    switch message {
+                    case .data(let data):
+                        self.handleIncomingData(data)
+                    case .string(let text):
+                        if let data = text.data(using: .utf8) {
+                            self.handleIncomingData(data)
+                        }
+                    @unknown default:
+                        break
+                    }
+                    // 持续监听下一条推送
+                    self.listenMessage()
+
+                case .failure:
+                    // 出现网络波动或 Mac mini 关机，瞬间感知并置为离线
+                    self.isOnline = false
+                    self.reconnectAfterDelay()
+                }
             }
         }
     }
 
-    public func fetch() {
-        guard let url = URL(string: "http://\(serverIP):\(serverPort)/metrics") else { return }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 1.0
+    private func handleIncomingData(_ payloadData: Data) {
+        if let decoded = try? JSONDecoder().decode(MetricsData.self, from: payloadData) {
+            self.data = decoded
+            self.cpuHistory.append(decoded.cpuUsage)
+            if self.cpuHistory.count > 20 { self.cpuHistory.removeFirst() }
+        }
+    }
 
-        URLSession.shared.dataTask(with: request) { [weak self] payloadData, _, error in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                if let payloadData = payloadData,
-                   let decoded = try? JSONDecoder().decode(MetricsData.self, from: payloadData) {
-                    self.data = decoded
-                    self.isOnline = true
-                    self.cpuHistory.append(decoded.cpuUsage)
-                    if self.cpuHistory.count > 20 { self.cpuHistory.removeFirst() }
-                } else {
-                    self.isOnline = false
+    private func startHeartbeat() {
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.webSocketTask?.sendPing { error in
+                if error != nil {
+                    Task { @MainActor [weak self] in
+                        self?.isOnline = false
+                    }
                 }
             }
-        }.resume()
+        }
+    }
+
+    private func reconnectAfterDelay() {
+        disconnect()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.connectWebSocket()
+        }
+    }
+
+    public func disconnect() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
     }
 }
