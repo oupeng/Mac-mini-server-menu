@@ -19,11 +19,11 @@ public struct MetricsPayload: Codable {
     public let memPercent: Double
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
-    public let totalRxBytes: UInt64       // 新增：开机累计下载总流量
-    public let totalTxBytes: UInt64       // 新增：开机累计上传总流量
+    public let totalRxBytes: UInt64
+    public let totalTxBytes: UInt64
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
-    public let topProcesses: [TopProcess] // 真实 Top 10 进程
+    public let topProcesses: [TopProcess]
 }
 
 public final class MetricsCollector {
@@ -102,6 +102,7 @@ public final class MetricsCollector {
 
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let name = String(cString: ptr.pointee.ifa_name)
+            // 锁定 en0 物理网卡
             if name == "en0", let data = ptr.pointee.ifa_data {
                 let ifData = data.assumingMemoryBound(to: if_data.self)
                 currentRx += UInt64(ifData.pointee.ifi_ibytes)
@@ -158,11 +159,12 @@ public final class MetricsCollector {
         return (readSpeed, writeSpeed)
     }
 
-    // 真实动态获取 Top 10 活跃进程（极轻量调用 ps 底层内核快照）
+    // 核心改动：采用 -m 严格按照物理内存驻留集 (RSS) 从大到小排序
     public func getRealTopProcesses() -> [TopProcess] {
         let task = Process()
         task.launchPath = "/bin/ps"
-        task.arguments = ["-Aceo", "%cpu,rss,comm", "-r"]
+        // -m: sort by memory usage
+        task.arguments = ["-Aceo", "%cpu,rss,comm", "-m"]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.launch()
@@ -174,8 +176,8 @@ public final class MetricsCollector {
         var result: [TopProcess] = []
 
         let lines = output.components(separatedBy: "\n")
-        // 跳过第一行表头，提取前 10 个进程
-        for line in lines.dropFirst().prefix(10) {
+        for line in lines.dropFirst() {
+            if result.count >= 10 { break }
             let parts = line.trimmingCharacters(in: .whitespaces)
                 .components(separatedBy: .whitespaces)
                 .filter { !$0.isEmpty }
@@ -186,7 +188,9 @@ public final class MetricsCollector {
                 let memMB = rssKB / 1024
                 let fullPath = parts[2...].joined(separator: " ")
                 let name = URL(fileURLWithPath: fullPath).lastPathComponent
-                result.append(TopProcess(name: name, cpu: cpuVal, memMB: memMB))
+                if !name.isEmpty && memMB > 0 {
+                    result.append(TopProcess(name: name, cpu: cpuVal, memMB: memMB))
+                }
             }
         }
         return result
