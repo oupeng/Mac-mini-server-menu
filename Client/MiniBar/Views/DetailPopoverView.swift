@@ -7,7 +7,7 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // 顶栏：服务器标题、运行时间与设置按钮
+            // 顶栏：服务器标题与操作
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
@@ -30,35 +30,70 @@ struct DetailPopoverView: View {
             } else if let d = vm.data, vm.isOnline {
                 // 核心指标卡片
                 VStack(spacing: 8) {
-                    HStack(spacing: 12) {
-                        MetricCard(title: "CPU 负荷", value: String(format: "%.1f%%", d.cpuUsage), subtitle: "\(Int(d.cpuTemp))°C  \(Int(d.powerWatts))W")
-                        MetricCard(title: "物理内存", value: String(format: "%.1f%%", d.memPercent), subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G")
+                    HStack(spacing: 10) {
+                        MetricCard(
+                            title: "CPU 负荷",
+                            value: String(format: "%.1f%%", d.cpuUsage),
+                            subtitle: "\(Int(d.cpuTemp))°C  \(Int(d.powerWatts))W"
+                        )
+                        MetricCard(
+                            title: "物理内存",
+                            value: String(format: "%.1f%%", d.memPercent),
+                            subtitle: "\(d.memUsedMB / 1024)G / \(d.memTotalMB / 1024)G"
+                        )
                     }
-                    HStack(spacing: 12) {
-                        MetricCard(title: "物理网络吞吐 (en0)", value: "↓ \(formatDetailedSpeed(d.netRxBytesPerSec))", subtitle: "↑ \(formatDetailedSpeed(d.netTxBytesPerSec))")
-                        MetricCard(title: "磁盘活动", value: "R: \(formatDetailedSpeed(d.diskReadBytesPerSec))", subtitle: "W: \(formatDetailedSpeed(d.diskWriteBytesPerSec))")
+
+                    HStack(spacing: 10) {
+                        // 带有开机累计总吞吐量的物理网卡卡片
+                        MetricCard(
+                            title: "物理网络吞吐 (en0)",
+                            value: "↓ \(formatDetailedSpeed(d.netRxBytesPerSec))",
+                            subtitle: "↑ \(formatDetailedSpeed(d.netTxBytesPerSec))\n累计: ↓\(formatTotalBytes(d.totalRxBytes ?? 0))  ↑\(formatTotalBytes(d.totalTxBytes ?? 0))"
+                        )
+
+                        MetricCard(
+                            title: "磁盘活动",
+                            value: "R: \(formatDetailedSpeed(d.diskReadBytesPerSec))",
+                            subtitle: "W: \(formatDetailedSpeed(d.diskWriteBytesPerSec))\nI/O 实时读写监控"
+                        )
                     }
                 }
 
-                // Top 活跃进程
+                // 真实 Top 10 活跃进程列表
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("活跃进程")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
-                    ForEach(d.topProcesses) { proc in
-                        HStack {
-                            Text(proc.name)
-                                .font(.system(size: 12, weight: .regular))
-                                .lineLimit(1)
-                            Spacer()
-                            Text("\(proc.memMB) MB")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-                            Text(String(format: "%.1f%%", proc.cpu))
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .frame(width: 45, alignment: .trailing)
+                    HStack {
+                        Text("活跃进程 (Top 10)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("内存")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text("CPU")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .frame(width: 45, alignment: .trailing)
+                    }
+
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 5) {
+                            ForEach(d.topProcesses) { proc in
+                                HStack {
+                                    Text(proc.name)
+                                        .font(.system(size: 11.5, weight: .regular))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("\(proc.memMB) MB")
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                    Text(String(format: "%.1f%%", proc.cpu))
+                                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                        .frame(width: 45, alignment: .trailing)
+                                }
+                            }
                         }
                     }
+                    .frame(maxHeight: 160) // 容纳 10 个进程的高品质滚动区
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
@@ -105,6 +140,16 @@ struct DetailPopoverView: View {
         if kb < 1024 { return String(format: "%.1f KB/s", kb) }
         return String(format: "%.2f MB/s", kb / 1024.0)
     }
+
+    // 格式化开机累计总吞吐量 (GB / TB)
+    private func formatTotalBytes(_ bytes: UInt64) -> String {
+        let gb = Double(bytes) / (1024.0 * 1024.0 * 1024.0)
+        if gb < 1000 {
+            return String(format: "%.1fG", gb)
+        } else {
+            return String(format: "%.2fT", gb / 1024.0)
+        }
+    }
 }
 
 struct MetricCard: View {
@@ -118,10 +163,11 @@ struct MetricCard: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
             Text(value)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .font(.system(size: 13, weight: .bold, design: .rounded))
             Text(subtitle)
-                .font(.system(size: 10, design: .monospaced))
+                .font(.system(size: 9.5, design: .monospaced))
                 .foregroundColor(.secondary)
+                .lineSpacing(2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
@@ -129,7 +175,6 @@ struct MetricCard: View {
     }
 }
 
-// MARK: - 设置面板（集成退出应用功能）
 struct SettingsView: View {
     @ObservedObject var vm: MonitorViewModel
     @Binding var isPresented: Bool
@@ -163,7 +208,6 @@ struct SettingsView: View {
 
             Divider().opacity(0.4)
 
-            // 操作按键区
             HStack {
                 Button("保存并重连") {
                     isPresented = false
@@ -174,7 +218,6 @@ struct SettingsView: View {
 
                 Spacer()
 
-                // 原生安全退出按钮
                 Button(role: .destructive) {
                     NSApplication.shared.terminate(nil)
                 } label: {
