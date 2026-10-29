@@ -1,6 +1,16 @@
 import SwiftUI
 import Combine
 
+public struct DiskVolumeItem: Codable, Identifiable {
+    public var id: String { mountPoint }
+    public let name: String
+    public let mountPoint: String
+    public let totalBytes: UInt64
+    public let freeBytes: UInt64
+    public let usedPercent: Double
+    public let smartStatus: String
+}
+
 public struct MetricsData: Codable {
     public let uptimeSeconds: Int
     public let loadAvg: [Double]
@@ -12,11 +22,12 @@ public struct MetricsData: Codable {
     public let memPercent: Double
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
-    public let totalRxBytes: UInt64?       // 接收开机累计总下载
-    public let totalTxBytes: UInt64?       // 接收开机累计总上传
+    public let totalRxBytes: UInt64?
+    public let totalTxBytes: UInt64?
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
     public let topProcesses: [TopProcessItem]
+    public let diskVolumes: [DiskVolumeItem]? // 存储空间与健康
 }
 
 public struct TopProcessItem: Codable, Identifiable {
