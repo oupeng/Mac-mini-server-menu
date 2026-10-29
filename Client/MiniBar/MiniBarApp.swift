@@ -18,17 +18,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
+    // 核心参数：永久锁死状态栏宽度，绝无伸缩抖动
+    private let fixedBarWidth: CGFloat = 185.0
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         viewModel = MonitorViewModel()
 
-        // 1. 创建状态栏项
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // 1. 创建固定宽度的状态栏项
+        statusItem = NSStatusBar.system.statusItem(withLength: fixedBarWidth)
         guard let button = statusItem.button else { return }
 
         // 2. 初始渲染一次图像并绑定
         renderMenuBarImage()
 
-        // 3. 核心：每当 WebSocket 推送新数据时，在主线程自动更新高清图表
+        // 3. 核心：每当 WebSocket 推送新数据时，在主线程自动更新纯白图表
         viewModel.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -46,22 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
     }
 
-    /// 现代 macOS 官方标准方案：将 SwiftUI 视图以超高清方式渲染为 NSImage 跨进程投射到控制中心
     @MainActor
     private func renderMenuBarImage() {
         guard let button = statusItem?.button else { return }
 
         let view = MenuBarStatusView(vm: viewModel)
         let renderer = ImageRenderer(content: view)
-        // 匹配 MacBook Pro 原生屏幕的视网膜缩放比
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
 
         if let image = renderer.nsImage {
-            // 设置为 false 以保留完整的原生彩色（蓝色网速、青色上行、紫色磁盘等）
             image.isTemplate = false
             button.image = image
             button.imagePosition = .imageOnly
-            statusItem.length = image.size.width
+            // 宽度永远定死，禁止随着数字长度发生任何像素级抖动
+            statusItem.length = fixedBarWidth
         }
     }
 
