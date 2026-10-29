@@ -1,109 +1,46 @@
-import AppKit
-import SwiftUI
-import Combine
-
-@main
-@MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    static func main() {
-        let app = NSApplication.shared
-        let delegate = AppDelegate()
-        app.delegate = delegate
-        app.setActivationPolicy(.accessory)
-        app.run()
-    }
-
-    var statusItem: NSStatusItem!
-    var popover = NSPopover()
-    var viewModel: MonitorViewModel!
-    private var cancellables = Set<AnyCancellable>()
-
-    // 2 倍图表宽度后的固定物理宽度（永久锁死绝不抖动）
-    private let fixedBarWidth: CGFloat = 250.0
-
-    // 专用于精准定位的绝对屏幕锚点窗口（彻底解决 ControlCenter 虚拟化导致的 X=0 左移 Bug）
-    private var anchorWindow: NSWindow?
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        viewModel = MonitorViewModel()
-
-        statusItem = NSStatusBar.system.statusItem(withLength: fixedBarWidth)
-        guard let button = statusItem.button else { return }
-
-        renderMenuBarImage()
-
-        viewModel.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.renderMenuBarImage()
-                }
-            }
-            .store(in: &cancellables)
-
-        button.target = self
-        button.action = #selector(togglePopover)
-
-        popover.contentViewController = NSHostingController(rootView: DetailPopoverView(vm: viewModel))
-        popover.behavior = .transient
-    }
-
-    @MainActor
-    private func renderMenuBarImage() {
-        guard let button = statusItem?.button else { return }
-
-        let view = MenuBarStatusView(vm: viewModel)
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
-
-        if let image = renderer.nsImage {
-            image.isTemplate = false
-            button.image = image
-            button.imagePosition = .imageOnly
-            statusItem.length = fixedBarWidth
+@objc func togglePopover() {
+        guard let button = statusItem.button else {
+            print("[MiniBar 诊断] ❌ 失败: statusItem.button 为空！")
+            return
         }
-    }
 
-    /// 核心修复：基于真实物理鼠标点击点锚定弹窗，终结任何系统级错位！
-    @objc func togglePopover() {
-        guard let button = statusItem.button else { return }
-        
+        print("===================== [MiniBar 诊断开始] =====================")
+        // 1. 检查鼠标绝对物理位置
+        let mouseLoc = NSEvent.mouseLocation
+        print("[诊断 1] 鼠标屏幕绝对坐标: X = \(mouseLoc.x), Y = \(mouseLoc.y)")
+
+        // 2. 检查当前主屏幕尺寸与边界
+        if let screen = NSScreen.main {
+            print("[诊断 2] 主屏幕 Frame: \(screen.frame), 菜单栏高度推算: \(screen.frame.maxY)")
+        }
+
+        // 3. 检查 statusItem.button 的内部 bounds
+        print("[诊断 3] button.bounds: \(button.bounds)")
+
+        // 4. 检查 button 所在系统窗口的真实位置与层级
+        if let win = button.window {
+            print("[诊断 4] button.window Frame: \(win.frame)")
+            print("[诊断 5] button 转换到屏幕的绝对 Rect: \(win.convertToScreen(button.bounds))")
+        } else {
+            print("[诊断 4/5] ⚠️ button.window 不存在！")
+        }
+
         if popover.isShown {
+            print("[诊断 6] Popover 当前为打开状态，执行关闭")
             popover.performClose(nil)
             return
         }
 
-        // 1. 激活 App 前台权限
         NSApp.activate(ignoringOtherApps: true)
-
-        // 2. 获取用户点击时的全局绝对物理屏幕坐标 (Global Screen Point)
-        let mouseLoc = NSEvent.mouseLocation
         
-        // 获取当前屏幕的菜单栏底部高度
-        let currentScreen = NSScreen.screens.first(where: { NSPointInRect(mouseLoc, $0.frame) }) ?? NSScreen.main ?? NSScreen.screens[0]
-        let menuBarBottomY = currentScreen.frame.maxY - 24.0
-
-        // 3. 构建精准物理锚点 (以用户点击的 X 坐标为中心，紧贴菜单栏底边缘)
-        let anchorRect = NSRect(x: mouseLoc.x - 1, y: menuBarBottomY, width: 2, height: 2)
-
-        if anchorWindow == nil {
-            let win = NSWindow(contentRect: anchorRect, styleMask: .borderless, backing: .buffered, defer: false)
-            win.isOpaque = false
-            win.backgroundColor = .clear
-            win.level = .statusBar
-            win.ignoresMouseEvents = true
-            anchorWindow = win
-        } else {
-            anchorWindow?.setFrame(anchorRect, display: false)
+        // 执行弹出
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        
+        // 5. 检查弹出后，Popover 窗口最终被系统放置在了哪里
+        if let popoverWindow = popover.contentViewController?.view.window {
+            print("[诊断 7] 💥 Popover 最终生成的窗口真实 Frame: \(popoverWindow.frame)")
         }
+        print("===================== [MiniBar 诊断结束] =====================\n")
 
-        guard let anchorWin = anchorWindow, let anchorView = anchorWin.contentView else { return }
-        anchorWin.orderFront(nil)
-
-        // 4. 将 Popover 精确锚定在真实的物理点击位置，小三角必定正对点击处！
-        popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .minY)
-        
-        // 5. 成为焦点窗口，点击外部自动收起
         popover.contentViewController?.view.window?.makeKey()
     }
-}
