@@ -20,6 +20,8 @@ public struct MetricsData: Codable {
     public let memUsedMB: Int
     public let memTotalMB: Int
     public let memPercent: Double
+    public let memPressureLevel: Int? // 1: 正常, 2: 警告, 4: 危险
+    public let swapUsedMB: Int?       // Swap 使用量
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
     public let totalRxBytes: UInt64?
@@ -27,7 +29,7 @@ public struct MetricsData: Codable {
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
     public let topProcesses: [TopProcessItem]
-    public let diskVolumes: [DiskVolumeItem]? // 存储空间与健康
+    public let diskVolumes: [DiskVolumeItem]?
 }
 
 public struct TopProcessItem: Codable, Identifiable {
