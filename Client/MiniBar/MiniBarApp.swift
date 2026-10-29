@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     // 锁定状态栏长条物理宽度为 250pt
-    private let fixedBarWidth: CGFloat = 236.0
+    private let fixedBarWidth: CGFloat = 275.0
 
     // 方案 A：现代 macOS 原生悬浮面板
     private var floatingPanel: ModernFloatingPanel!
