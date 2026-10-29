@@ -18,8 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // 核心参数：永久锁死状态栏宽度，绝无伸缩抖动
-    private let fixedBarWidth: CGFloat = 185.0
+    // 全面放大后的固定物理宽度（永久锁死绝不伸缩）
+    private let fixedBarWidth: CGFloat = 230.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         viewModel = MonitorViewModel()
@@ -61,7 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             image.isTemplate = false
             button.image = image
             button.imagePosition = .imageOnly
-            // 宽度永远定死，禁止随着数字长度发生任何像素级抖动
             statusItem.length = fixedBarWidth
         }
     }
@@ -71,7 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            // 核心修复：把锚点精准定位在长条按钮的几何中心点 (midX)，让弹窗小三角箭头永远居中对齐！
+            let centerRect = NSRect(x: button.bounds.midX, y: 0, width: 1, height: button.bounds.height)
+            popover.show(relativeTo: centerRect, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
