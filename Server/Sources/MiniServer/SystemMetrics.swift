@@ -27,6 +27,8 @@ public struct MetricsPayload: Codable {
     public let memUsedMB: Int
     public let memTotalMB: Int
     public let memPercent: Double
+    public let memPressureLevel: Int  // 新增：内存压力等级 (1=正常, 2=警告, 4=危险)
+    public let swapUsedMB: Int        // 新增：Swap 交换占用
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
     public let totalRxBytes: UInt64
@@ -108,6 +110,22 @@ public final class MetricsCollector {
         return (usedMB, totalMB, percent)
     }
 
+    // 核心新增：直接向系统内核查询内存压力等级与 Swap 容量
+    public func getMemoryPressure() -> (level: Int, swapMB: Int) {
+        var level: Int32 = 1 // 1: 正常, 2: 警告, 4: 危险
+        var size = MemoryLayout<Int32>.size
+        sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0)
+
+        var swapUsedMB = 0
+        var buf = [UInt64](repeating: 0, count: 4)
+        var bufSize = buf.count * MemoryLayout<UInt64>.size
+        // vm.swapusage 返回的结构体中，第三个 UInt64 就是已用交换空间 (xsu_used)
+        if sysctlbyname("vm.swapusage", &buf, &bufSize, nil, 0) == 0 {
+            swapUsedMB = Int(buf[2] / (1024 * 1024))
+        }
+        return (Int(level), swapUsedMB)
+    }
+
     public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64, totalRx: UInt64, totalTx: UInt64) {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
         var len: Int = 0
@@ -156,7 +174,6 @@ public final class MetricsCollector {
         return (rxSpeed, txSpeed, currentRx, currentTx)
     }
 
-    // 核心修复：还原到 IOBlockStorageDriver，完美聚合所有内置与外置磁盘读写活动
     public func getDiskThroughput() -> (readSec: UInt64, writeSec: UInt64) {
         var diskList: io_iterator_t = 0
         let match = IOServiceMatching("IOBlockStorageDriver")
@@ -174,7 +191,6 @@ public final class MetricsCollector {
             if IORegistryEntryCreateCFProperties(drive, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
                let dict = props?.takeRetainedValue() as? [String: Any],
                let stats = dict["Statistics"] as? [String: Any] {
-                // 不再进行多余的过滤，直接累加所有块存储驱动的 I/O 字节数
                 totalRead += (stats["Bytes (Read)"] as? UInt64) ?? 0
                 totalWrite += (stats["Bytes (Write)"] as? UInt64) ?? 0
             }
@@ -323,6 +339,7 @@ public final class MetricsCollector {
     public func collectPayload() -> MetricsPayload {
         let cpu = getCPUUsage()
         let mem = getMemoryStats()
+        let memPressure = getMemoryPressure() // 读取内存压力
         let net = getNetworkThroughput()
         let disk = getDiskThroughput()
         let temp = SMCReader.shared.getCPUTemperature()
@@ -349,6 +366,8 @@ public final class MetricsCollector {
             memUsedMB: mem.usedMB,
             memTotalMB: mem.totalMB,
             memPercent: mem.percent,
+            memPressureLevel: memPressure.level,
+            swapUsedMB: memPressure.swapMB,
             netRxBytesPerSec: net.rxSec,
             netTxBytesPerSec: net.txSec,
             totalRxBytes: net.totalRx,
