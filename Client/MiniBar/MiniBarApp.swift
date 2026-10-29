@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 
 @main
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static func main() {
         let app = NSApplication.shared
@@ -27,11 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 2. 初始渲染一次图像并绑定
         renderMenuBarImage()
 
-        // 3. 核心：每当 WebSocket 推送新数据时，自动更新高清状态栏图表
+        // 3. 核心：每当 WebSocket 推送新数据时，在主线程自动更新高清图表
         viewModel.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.renderMenuBarImage()
+                Task { @MainActor [weak self] in
+                    self?.renderMenuBarImage()
+                }
             }
             .store(in: &cancellables)
 
@@ -44,12 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 现代 macOS 官方标准方案：将 SwiftUI 视图以超高清方式渲染为 NSImage 跨进程投射到控制中心
+    @MainActor
     private func renderMenuBarImage() {
         guard let button = statusItem?.button else { return }
 
         let view = MenuBarStatusView(vm: viewModel)
         let renderer = ImageRenderer(content: view)
-        // 匹配 MacBook Pro 原生屏幕的 2.0x 视网膜缩放比
+        // 匹配 MacBook Pro 原生屏幕的视网膜缩放比
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
 
         if let image = renderer.nsImage {
