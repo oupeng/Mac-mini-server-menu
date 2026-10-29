@@ -3,8 +3,8 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    // 图表方正化后的优化定宽
-    private let totalWidth: CGFloat = 220.0
+    // 图表加宽为 2 倍后的完美定宽
+    private let totalWidth: CGFloat = 250.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
@@ -24,20 +24,20 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 2. 实时网络吞吐 (定宽 50pt，等宽数字)
+                // 2. 实时网络吞吐 (无小数点，等宽排版，定宽 50pt)
                 VStack(alignment: .trailing, spacing: 0) {
                     HStack(spacing: 2) {
                         Text("↓")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
-                        Text(formatSpeed(d.netRxBytesPerSec))
+                        Text(formatSpeedNoDecimal(d.netRxBytesPerSec))
                             .foregroundColor(.white)
                     }
                     HStack(spacing: 2) {
                         Text("↑")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
-                        Text(formatSpeed(d.netTxBytesPerSec))
+                        Text(formatSpeedNoDecimal(d.netTxBytesPerSec))
                             .foregroundColor(.white.opacity(0.85))
                     }
                 }
@@ -47,7 +47,7 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 3. 内存能量条 (超 90% 变黄告警，低于 90% 恢复纯白)
+                // 3. 内存能量条 (超 90% 变黄告警)
                 let isMemAlert = d.memPercent >= 90.0
                 let memColor: Color = isMemAlert ? .yellow : .white
 
@@ -62,31 +62,31 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 4. CPU 实时曲线 (宽高相同：15x15 正方形)
+                // 4. CPU 实时曲线 (2 倍宽度：30x15)
                 HStack(spacing: 3) {
                     Text("C")
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.white.opacity(0.6))
-                    SquareAreaSparkline(data: vm.cpuHistory)
-                        .frame(width: 15, height: 15)
+                    WideAreaSparkline(data: vm.cpuHistory)
+                        .frame(width: 30, height: 15)
                 }
-                .frame(width: 25, alignment: .center)
+                .frame(width: 40, alignment: .center)
 
                 WhiteDivider()
 
-                // 5. 磁盘活动 (宽高相同：15x15 正方形)
+                // 5. 磁盘活动 (2 倍宽度：30x15，含内置及所有外接盘)
                 HStack(spacing: 3) {
                     Image(systemName: "internaldrive")
                         .font(.system(size: 9.5))
                         .foregroundColor(.white.opacity(0.6))
 
-                    SquareDualSparkline(
+                    WideDualSparkline(
                         topData: vm.diskReadHistory,
                         bottomData: vm.diskWriteHistory
                     )
-                    .frame(width: 15, height: 15)
+                    .frame(width: 30, height: 15)
                 }
-                .frame(width: 28, alignment: .center)
+                .frame(width: 44, alignment: .center)
             } else {
                 HStack(spacing: 5) {
                     Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
@@ -103,12 +103,13 @@ struct MenuBarStatusView: View {
         .frame(width: totalWidth, height: barHeight)
     }
 
-    private func formatSpeed(_ bytes: UInt64) -> String {
+    // 核心要求：去除小数点后的显示
+    private func formatSpeedNoDecimal(_ bytes: UInt64) -> String {
         let kb = Double(bytes) / 1024.0
         if kb < 1000 {
-            return String(format: "%3.0fK", kb)
+            return String(format: "%.0fK", kb)
         } else {
-            return String(format: "%3.1fM", kb / 1024.0)
+            return String(format: "%.0fM", kb / 1024.0)
         }
     }
 }
@@ -121,28 +122,29 @@ struct WhiteDivider: View {
     }
 }
 
-// MARK: - 正方形矢量图表 (宽高相同 15x15)
+// MARK: - 2 倍宽度矢量图表 (30x15)
 
-/// CPU 正方形面积图 (15x15)
-struct SquareAreaSparkline: View {
+/// CPU 2 倍宽面积图 (30x15)
+struct WideAreaSparkline: View {
     let data: [Double]
-    private let size: CGFloat = 15.0
+    private let width: CGFloat = 30.0
+    private let height: CGFloat = 15.0
 
     var body: some View {
         let count = data.count
-        let step = count > 1 ? size / CGFloat(count - 1) : size
+        let step = count > 1 ? width / CGFloat(count - 1) : width
 
         ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(Color.white.opacity(0.12))
 
             Path { p in
-                p.move(to: CGPoint(x: 0, y: size))
+                p.move(to: CGPoint(x: 0, y: height))
                 for (i, val) in data.enumerated() {
-                    let y = size - (CGFloat(val) * (size - 2)) - 1
-                    p.addLine(to: CGPoint(x: CGFloat(i) * step, y: max(0, min(size, y))))
+                    let y = height - (CGFloat(val) * (height - 2)) - 1
+                    p.addLine(to: CGPoint(x: CGFloat(i) * step, y: max(0, min(height, y))))
                 }
-                p.addLine(to: CGPoint(x: size, y: size))
+                p.addLine(to: CGPoint(x: width, y: height))
                 p.closeSubpath()
             }
             .fill(LinearGradient(colors: [Color.white.opacity(0.45), Color.white.opacity(0.1)], startPoint: .top, endPoint: .bottom))
@@ -150,34 +152,35 @@ struct SquareAreaSparkline: View {
             Path { p in
                 for (i, val) in data.enumerated() {
                     let x = CGFloat(i) * step
-                    let y = size - (CGFloat(val) * (size - 2)) - 1
+                    let y = height - (CGFloat(val) * (height - 2)) - 1
                     if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
                 }
             }
             .stroke(Color.white, lineWidth: 1.0)
         }
-        .frame(width: size, height: size)
+        .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 1.5))
     }
 }
 
-/// 磁盘正方形双向图 (15x15)
-struct SquareDualSparkline: View {
+/// 磁盘 2 倍宽双向图 (30x15)
+struct WideDualSparkline: View {
     let topData: [Double]
     let bottomData: [Double]
-    private let size: CGFloat = 15.0
+    private let width: CGFloat = 30.0
+    private let height: CGFloat = 15.0
 
     var body: some View {
-        let midY: CGFloat = size / 2.0
+        let midY: CGFloat = height / 2.0
 
         Canvas { context, _ in
-            let step = topData.count > 1 ? size / CGFloat(topData.count - 1) : size
+            let step = topData.count > 1 ? width / CGFloat(topData.count - 1) : width
 
-            context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: size, height: size), cornerRadius: 1.5), with: .color(Color.white.opacity(0.12)))
+            context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: width, height: height), cornerRadius: 1.5), with: .color(Color.white.opacity(0.12)))
 
             var midLine = Path()
             midLine.move(to: CGPoint(x: 0, y: midY))
-            midLine.addLine(to: CGPoint(x: size, y: midY))
+            midLine.addLine(to: CGPoint(x: width, y: midY))
             context.stroke(midLine, with: .color(Color.white.opacity(0.25)), lineWidth: 0.5)
 
             var topPath = Path()
@@ -196,11 +199,10 @@ struct SquareDualSparkline: View {
             }
             context.stroke(bottomPath, with: .color(Color.white.opacity(0.7)), lineWidth: 1.0)
         }
-        .frame(width: size, height: size)
+        .frame(width: width, height: height)
     }
 }
 
-/// 垂直能量胶囊 (支持动态警示色切换)
 struct WhiteCapsuleBar: View {
     let ratio: Double
     var tint: Color = .white
