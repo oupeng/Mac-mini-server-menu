@@ -17,7 +17,7 @@ jobs:
           # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
           swift build -c release --triple x86_64-apple-macosx10.15
           
-          # 自动获取官方标准产物路径，避免硬编码路径报错
+          # 自动获取官方标准产物路径并拷贝
           BIN_PATH=$(swift build -c release --triple x86_64-apple-macosx10.15 --show-bin-path)
           
           mkdir -p ../dist/server
@@ -56,10 +56,13 @@ jobs:
           # 拷贝编译好的二进制程序
           cp "$BIN_PATH/MiniBar" "$APP_BUNDLE/Contents/MacOS/"
           
-          # 拷贝 Info.plist (实现纯菜单栏常驻、不进 Dock 栏)
+          # 拷贝 Info.plist (包含纯菜单栏、局域网权限声明)
           if [ -f "MiniBar/Info.plist" ]; then
             cp MiniBar/Info.plist "$APP_BUNDLE/Contents/"
           fi
+          
+          # 关键：给 App 进行本地 Ad-hoc 代码签名，确保双击启动具备完整系统权限
+          codesign --force --deep --sign - "$APP_BUNDLE"
           
           mkdir -p ../dist/client
           cp -R "$APP_BUNDLE" ../dist/client/
