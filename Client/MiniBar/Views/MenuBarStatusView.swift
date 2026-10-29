@@ -3,7 +3,8 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    private let totalWidth: CGFloat = 250.0
+    // 因为内存模块变宽，整体物理定宽扩充至 275.0
+    private let totalWidth: CGFloat = 275.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
@@ -25,14 +26,14 @@ struct MenuBarStatusView: View {
 
                 // 2. 实时网络吞吐
                 VStack(alignment: .trailing, spacing: 0) {
-                    HStack(spacing: 2) {
+                    HStack(spacing: 1) {
                         Text("↓")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
                         Text(formatSpeedNoDecimal(d.netRxBytesPerSec))
                             .foregroundColor(.white)
                     }
-                    HStack(spacing: 2) {
+                    HStack(spacing: 1) {
                         Text("↑")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
@@ -42,24 +43,24 @@ struct MenuBarStatusView: View {
                 }
                 .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                 .monospacedDigit()
-                .frame(width: 50, alignment: .trailing)
+                .frame(width: 44, alignment: .trailing)
 
                 WhiteDivider()
 
-                // 3. 内存压力指示 (按 macOS 标准三档：正常=白, 警告=黄, 危险=红)
+                // 3. 核心修改：内存压力面积图 (白/黄/红三档动态着色)
                 let pressure = d.memPressureLevel ?? 1
                 let memColor: Color = pressure >= 4 ? .red : (pressure >= 2 ? .yellow : .white)
 
                 HStack(spacing: 3) {
                     Text("M")
                         .font(.system(size: 8, weight: .heavy))
-                        // 如果是正常则用透明白，告警则直接用亮色
                         .foregroundColor(memColor == .white ? .white.opacity(0.6) : memColor)
                     
-                    WhiteCapsuleBar(ratio: d.memPercent / 100.0, tint: memColor)
-                        .frame(width: 5, height: 15)
+                    // 完全替换为活动监视器风格的面积图，高度反映真实内存核心压力
+                    WideAreaSparkline(data: vm.memPressureHistory, tint: memColor)
+                        .frame(width: 30, height: 15)
                 }
-                .frame(width: 20, alignment: .center)
+                .frame(width: 44, alignment: .center)
 
                 WhiteDivider()
 
@@ -68,10 +69,10 @@ struct MenuBarStatusView: View {
                     Text("C")
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.white.opacity(0.6))
-                    WideAreaSparkline(data: vm.cpuHistory)
+                    WideAreaSparkline(data: vm.cpuHistory, tint: .white)
                         .frame(width: 30, height: 15)
                 }
-                .frame(width: 40, alignment: .center)
+                .frame(width: 44, alignment: .center)
 
                 WhiteDivider()
 
@@ -122,8 +123,10 @@ struct WhiteDivider: View {
     }
 }
 
+// 修改面积图使其支持外界传入动态色彩 (tint)
 struct WideAreaSparkline: View {
     let data: [Double]
+    var tint: Color = .white // 默认白色
     private let width: CGFloat = 30.0
     private let height: CGFloat = 15.0
 
@@ -144,7 +147,7 @@ struct WideAreaSparkline: View {
                 p.addLine(to: CGPoint(x: width, y: height))
                 p.closeSubpath()
             }
-            .fill(LinearGradient(colors: [Color.white.opacity(0.45), Color.white.opacity(0.1)], startPoint: .top, endPoint: .bottom))
+            .fill(LinearGradient(colors: [tint.opacity(0.45), tint.opacity(0.1)], startPoint: .top, endPoint: .bottom))
 
             Path { p in
                 for (i, val) in data.enumerated() {
@@ -153,7 +156,7 @@ struct WideAreaSparkline: View {
                     if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
                 }
             }
-            .stroke(Color.white, lineWidth: 1.0)
+            .stroke(tint, lineWidth: 1.0)
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 1.5))
@@ -194,26 +197,6 @@ struct WideDualSparkline: View {
                 if i == 0 { bottomPath.move(to: CGPoint(x: x, y: y)) } else { bottomPath.addLine(to: CGPoint(x: x, y: y)) }
             }
             context.stroke(bottomPath, with: .color(Color.white.opacity(0.7)), lineWidth: 1.0)
-        }
-        .frame(width: width, height: height)
-    }
-}
-
-struct WhiteCapsuleBar: View {
-    let ratio: Double
-    var tint: Color = .white
-    private let width: CGFloat = 5.0
-    private let height: CGFloat = 15.0
-
-    var body: some View {
-        let fillH = max(2, height * CGFloat(min(max(ratio, 0), 1)))
-
-        ZStack(alignment: .bottom) {
-            Capsule()
-                .fill(tint.opacity(0.18))
-            Capsule()
-                .fill(tint)
-                .frame(width: width, height: fillH)
         }
         .frame(width: width, height: height)
     }
