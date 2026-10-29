@@ -18,8 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var viewModel: MonitorViewModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // 同步锁死为 220pt 紧凑宽度
-    private let fixedBarWidth: CGFloat = 220.0
+    // 2 倍图表宽度后的固定物理宽度（永久锁死绝不抖动）
+    private let fixedBarWidth: CGFloat = 250.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         viewModel = MonitorViewModel()
@@ -66,8 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            let centerRect = NSRect(x: button.bounds.midX, y: 0, width: 1, height: button.bounds.height)
-            popover.show(relativeTo: centerRect, of: button, preferredEdge: .minY)
+            // 恢复直接使用 button.bounds 作为锚点，让系统自动完成最优居中
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
