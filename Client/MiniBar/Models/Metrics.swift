@@ -31,7 +31,13 @@ public final class MonitorViewModel: ObservableObject {
 
     @Published public var data: MetricsData?
     @Published public var isOnline: Bool = false
-    @Published public var cpuHistory: [Double] = Array(repeating: 0.0, count: 20)
+
+    // 最近 18 个采样点历史缓冲队列（用于菜单栏波形绘制）
+    @Published public var cpuHistory: [Double] = Array(repeating: 0.0, count: 18)
+    @Published public var netRxHistory: [Double] = Array(repeating: 0.0, count: 18)
+    @Published public var netTxHistory: [Double] = Array(repeating: 0.0, count: 18)
+    @Published public var diskReadHistory: [Double] = Array(repeating: 0.0, count: 18)
+    @Published public var diskWriteHistory: [Double] = Array(repeating: 0.0, count: 18)
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var pingTimer: Timer?
@@ -44,8 +50,7 @@ public final class MonitorViewModel: ObservableObject {
 
     private func setupSession() {
         let config = URLSessionConfiguration.ephemeral
-        // 核心技术点：清空代理字典，强制绕过系统 HTTP / HTTPS / SOCKS 代理直连局域网！
-        config.connectionProxyDictionary = [:]
+        config.connectionProxyDictionary = [:] // 绕过系统代理
         config.timeoutIntervalForRequest = 3.0
         config.waitsForConnectivity = false
         self.urlSession = URLSession(configuration: config)
@@ -64,9 +69,6 @@ public final class MonitorViewModel: ObservableObject {
         listenMessage()
         startHeartbeat()
     }
-
-    public func fetch() { connectWebSocket() }
-    public func startPolling() { connectWebSocket() }
 
     private func listenMessage() {
         webSocketTask?.receive { [weak self] result in
@@ -87,8 +89,7 @@ public final class MonitorViewModel: ObservableObject {
                     }
                     self.listenMessage()
 
-                case .failure(let error):
-                    print("[WebSocket Error] 详细报错:", error.localizedDescription)
+                case .failure:
                     self.isOnline = false
                     self.reconnectAfterDelay()
                 }
@@ -99,9 +100,19 @@ public final class MonitorViewModel: ObservableObject {
     private func handleIncomingData(_ payloadData: Data) {
         if let decoded = try? JSONDecoder().decode(MetricsData.self, from: payloadData) {
             self.data = decoded
-            self.cpuHistory.append(decoded.cpuUsage)
-            if self.cpuHistory.count > 20 { self.cpuHistory.removeFirst() }
+            
+            // 更新滑动历史窗口
+            updateHistory(&cpuHistory, newRatio: decoded.cpuUsage / 100.0)
+            updateHistory(&netRxHistory, newRatio: min(Double(decoded.netRxBytesPerSec) / (1024 * 1024 * 10), 1.0)) // 基准 10MB/s 归一化
+            updateHistory(&netTxHistory, newRatio: min(Double(decoded.netTxBytesPerSec) / (1024 * 1024 * 5), 1.0))
+            updateHistory(&diskReadHistory, newRatio: min(Double(decoded.diskReadBytesPerSec) / (1024 * 1024 * 20), 1.0))
+            updateHistory(&diskWriteHistory, newRatio: min(Double(decoded.diskWriteBytesPerSec) / (1024 * 1024 * 20), 1.0))
         }
+    }
+
+    private func updateHistory(_ array: inout [Double], newRatio: Double) {
+        array.append(max(0.0, min(1.0, newRatio)))
+        if array.count > 18 { array.removeFirst() }
     }
 
     private func startHeartbeat() {
