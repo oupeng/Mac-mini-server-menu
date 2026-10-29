@@ -34,7 +34,7 @@ public struct MetricsPayload: Codable {
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
     public let topProcesses: [TopProcess]
-    public let diskVolumes: [DiskVolumeInfo] // 新增：10分钟刷新的磁盘空间与SMART
+    public let diskVolumes: [DiskVolumeInfo]
 }
 
 public final class MetricsCollector {
@@ -47,7 +47,6 @@ public final class MetricsCollector {
     private var lastDiskWrite: UInt64 = 0
     private var lastDiskTime: Date = Date()
 
-    // 10 分钟 (600秒) 空间与 SMART 缓存
     private var lastDiskSpaceCheckTime: Date = .distantPast
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
@@ -152,28 +151,31 @@ public final class MetricsCollector {
         return (rxSpeed, txSpeed, currentRx, currentTx)
     }
 
+    // 核心升级：遍历 IOMedia 顶级根节点，彻底覆盖所有内置 SSD、外接 USB 硬盘盒与磁盘阵列
     public func getDiskThroughput() -> (readSec: UInt64, writeSec: UInt64) {
-        var diskList: io_iterator_t = 0
-        let match = IOServiceMatching("IOBlockStorageDriver")
-        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &diskList) == kIOReturnSuccess else {
+        var mediaList: io_iterator_t = 0
+        // 匹配所有存储介质节点
+        let match = IOServiceMatching("IOMedia")
+        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &mediaList) == kIOReturnSuccess else {
             return (0, 0)
         }
-        defer { IOObjectRelease(diskList) }
+        defer { IOObjectRelease(mediaList) }
 
         var totalRead: UInt64 = 0
         var totalWrite: UInt64 = 0
-        var drive: io_object_t = IOIteratorNext(diskList)
+        var media: io_object_t = IOIteratorNext(mediaList)
 
-        while drive != 0 {
+        while media != 0 {
             var props: Unmanaged<CFMutableDictionary>?
-            if IORegistryEntryCreateCFProperties(drive, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+            if IORegistryEntryCreateCFProperties(media, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
                let dict = props?.takeRetainedValue() as? [String: Any],
+               let isWhole = dict["Whole"] as? Bool, isWhole, // 仅统计整块物理盘，避免各分区重复累加
                let stats = dict["Statistics"] as? [String: Any] {
                 totalRead += (stats["Bytes (Read)"] as? UInt64) ?? 0
                 totalWrite += (stats["Bytes (Write)"] as? UInt64) ?? 0
             }
-            IOObjectRelease(drive)
-            drive = IOIteratorNext(diskList)
+            IOObjectRelease(media)
+            media = IOIteratorNext(mediaList)
         }
 
         let now = Date()
@@ -187,7 +189,6 @@ public final class MetricsCollector {
         return (readSpeed, writeSpeed)
     }
 
-    // 核心新增：10分钟低频读取 VFS 缓存 + IOKit 静态 SMART 状态 (零唤醒零能耗)
     public func getDiskVolumesCached() -> [DiskVolumeInfo] {
         let now = Date()
         if !cachedDiskVolumes.isEmpty && now.timeIntervalSince(lastDiskSpaceCheckTime) < diskSpaceInterval {
@@ -199,8 +200,6 @@ public final class MetricsCollector {
         guard count > 0, let buffer = mntbuf else { return cachedDiskVolumes }
 
         var results: [DiskVolumeInfo] = []
-
-        // 读取系统已缓存的 SMART 字典映射
         let smartMap = getCachedSmartStatusMap()
 
         for i in 0..<Int(count) {
@@ -212,9 +211,7 @@ public final class MetricsCollector {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
             }
 
-            // 智能过滤：只保留根目录 "/" 与用户外接卷 "/Volumes/*"
             if mntOn == "/" || mntOn.hasPrefix("/Volumes/") {
-                // 排除系统内部的 VM, Preboot, Recovery 临时快照卷
                 if mntOn.contains("Preboot") || mntOn.contains("Recovery") || mntOn.contains("VM") {
                     continue
                 }
@@ -230,7 +227,6 @@ public final class MetricsCollector {
                     var displayName = URL(fileURLWithPath: mntOn).lastPathComponent
                     if mntOn == "/" { displayName = "Macintosh HD" }
 
-                    // 从 /dev/disk1s1 匹配父磁盘标识 disk1
                     let devName = URL(fileURLWithPath: mntFrom).lastPathComponent
                     let bsdParent = devName.components(separatedBy: "s").first ?? devName
                     let smart = smartMap[bsdParent] ?? "良好"
@@ -252,7 +248,6 @@ public final class MetricsCollector {
         return results
     }
 
-    // 从 IOKit 注册表抓取系统现成的 SMART 缓存状态 (绝不唤醒磁盘)
     private func getCachedSmartStatusMap() -> [String: String] {
         var map: [String: String] = [:]
         var iter: io_iterator_t = 0
