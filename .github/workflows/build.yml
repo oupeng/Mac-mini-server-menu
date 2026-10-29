@@ -1,10 +1,4 @@
-name: Manual Build MiniMonitor
-
-on:
-  workflow_dispatch: # 仅手动触发
-
-jobs:
-  build-server:
+build-server:
     name: Build Mac mini Server (Catalina x86_64)
     runs-on: macos-latest
     steps:
@@ -17,8 +11,11 @@ jobs:
           # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
           swift build -c release --triple x86_64-apple-macosx10.15
           
+          # 获取官方标准的二进制输出路径并拷贝
+          BIN_PATH=$(swift build -c release --triple x86_64-apple-macosx10.15 --show-bin-path)
           mkdir -p ../dist/server
-          cp .build/x86_64-apple-macosx10.15/release/minimonitord ../dist/server/
+          cp "$BIN_PATH/minimonitord" ../dist/server/
+          
           if [ -f "com.user.minimonitor.plist" ]; then
             cp com.user.minimonitor.plist ../dist/server/
           fi
@@ -28,38 +25,3 @@ jobs:
         with:
           name: MacMini-Server-Catalina
           path: dist/server/
-
-  build-client:
-    name: Build MacBook Pro Client (macOS 26 x86_64)
-    runs-on: macos-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Build MiniBar.app
-        run: |
-          cd Client
-          # 编译 Intel x86_64 二进制 (MacBook Pro 2020)
-          swift build -c release --arch x86_64
-          
-          # 手动组装标准 macOS .app 目录结构
-          APP_BUNDLE="MiniBar.app"
-          mkdir -p "$APP_BUNDLE/Contents/MacOS"
-          mkdir -p "$APP_BUNDLE/Contents/Resources"
-          
-          # 拷贝编译好的可执行程序
-          cp .build/x86_64-apple-macosx/release/MiniBar "$APP_BUNDLE/Contents/MacOS/"
-          
-          # 拷贝 Info.plist
-          if [ -f "MiniBar/Info.plist" ]; then
-            cp MiniBar/Info.plist "$APP_BUNDLE/Contents/"
-          fi
-          
-          mkdir -p ../dist/client
-          cp -R "$APP_BUNDLE" ../dist/client/
-
-      - name: Upload Client Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: MacBook-MiniBar-Client
-          path: dist/client/
