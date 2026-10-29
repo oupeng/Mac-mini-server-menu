@@ -19,8 +19,8 @@ public struct MetricsPayload: Codable {
     public let memPercent: Double
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
-    public let totalRxBytes: UInt64
-    public let totalTxBytes: UInt64
+    public let totalRxBytes: UInt64 // 64位无溢出开机累计下载
+    public let totalTxBytes: UInt64 // 64位无溢出开机累计上传
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
     public let topProcesses: [TopProcess]
@@ -30,8 +30,6 @@ public final class MetricsCollector {
     private var lastCPULoad: host_cpu_load_info?
     private var lastNetRx: UInt64 = 0
     private var lastNetTx: UInt64 = 0
-    private var currentTotalRx: UInt64 = 0
-    private var currentTotalTx: UInt64 = 0
     private var lastNetTime: Date = Date()
 
     private var lastDiskRead: UInt64 = 0
@@ -92,26 +90,41 @@ public final class MetricsCollector {
         return (usedMB, totalMB, percent)
     }
 
+    // 核心重构：采用 sysctl NET_RT_IFLIST2 提取 64 位网卡计数器，杜绝 4GB 循环归零溢出
     public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64, totalRx: UInt64, totalTx: UInt64) {
-        var ifap: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifap) == 0, let first = ifap else { return (0, 0, 0, 0) }
-        defer { freeifaddrs(ifap) }
+        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
+        var len: Int = 0
+        guard sysctl(&mib, 6, nil, &len, nil, 0) == 0 else { return (0, 0, 0, 0) }
+
+        var buffer = [Int8](repeating: 0, count: len)
+        guard sysctl(&mib, 6, &buffer, &len, nil, 0) == 0 else { return (0, 0, 0, 0) }
 
         var currentRx: UInt64 = 0
         var currentTx: UInt64 = 0
 
-        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            let name = String(cString: ptr.pointee.ifa_name)
-            // 锁定 en0 物理网卡
-            if name == "en0", let data = ptr.pointee.ifa_data {
-                let ifData = data.assumingMemoryBound(to: if_data.self)
-                currentRx += UInt64(ifData.pointee.ifi_ibytes)
-                currentTx += UInt64(ifData.pointee.ifi_obytes)
+        buffer.withUnsafeBufferPointer { bufPtr in
+            var cursor = bufPtr.baseAddress!
+            let end = cursor.advanced(by: len)
+
+            while cursor < end {
+                let msgHdr = cursor.withMemoryRebound(to: if_msghdr.self, capacity: 1) { $0.pointee }
+                if msgHdr.ifm_type == RTM_IFINFO2 {
+                    let if2m = cursor.withMemoryRebound(to: if_msghdr2.self, capacity: 1) { $0.pointee }
+                    let ifIndex = Int(if2m.ifm_index)
+                    var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
+                    if let _ = if_indextoname(UInt32(ifIndex), &nameBuf) {
+                        let name = String(cString: nameBuf)
+                        // 锁定 en0 物理网卡
+                        if name == "en0" {
+                            currentRx = if2m.ifm_data.ifi_ibytes
+                            currentTx = if2m.ifm_data.ifi_obytes
+                            break
+                        }
+                    }
+                }
+                cursor = cursor.advanced(by: Int(msgHdr.ifm_msglen))
             }
         }
-
-        currentTotalRx = currentRx
-        currentTotalTx = currentTx
 
         let now = Date()
         let elapsed = max(now.timeIntervalSince(lastNetTime), 0.1)
@@ -121,11 +134,13 @@ public final class MetricsCollector {
         lastNetRx = currentRx
         lastNetTx = currentTx
         lastNetTime = now
-        return (rxSpeed, txSpeed, currentTotalRx, currentTotalTx)
+        return (rxSpeed, txSpeed, currentRx, currentTx)
     }
 
+    // 核心重构：遍历所有存储总线（内置 SSD + 外置 USB 硬盘 + 外置 Thunderbolt 盘）
     public func getDiskThroughput() -> (readSec: UInt64, writeSec: UInt64) {
         var diskList: io_iterator_t = 0
+        // 匹配所有块存储驱动（内部及外部全局覆盖）
         let match = IOServiceMatching("IOBlockStorageDriver")
         guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &diskList) == kIOReturnSuccess else {
             return (0, 0)
@@ -141,6 +156,7 @@ public final class MetricsCollector {
             if IORegistryEntryCreateCFProperties(drive, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
                let dict = props?.takeRetainedValue() as? [String: Any],
                let stats = dict["Statistics"] as? [String: Any] {
+                // 累计所有内置与外置介质的字节总数
                 totalRead += (stats["Bytes (Read)"] as? UInt64) ?? 0
                 totalWrite += (stats["Bytes (Write)"] as? UInt64) ?? 0
             }
@@ -159,11 +175,10 @@ public final class MetricsCollector {
         return (readSpeed, writeSpeed)
     }
 
-    // 核心改动：采用 -m 严格按照物理内存驻留集 (RSS) 从大到小排序
+    // 真实动态获取按内存排序的 Top 10
     public func getRealTopProcesses() -> [TopProcess] {
         let task = Process()
         task.launchPath = "/bin/ps"
-        // -m: sort by memory usage
         task.arguments = ["-Aceo", "%cpu,rss,comm", "-m"]
         let pipe = Pipe()
         task.standardOutput = pipe
