@@ -3,14 +3,13 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    // 缩紧网速虚位后的完美定宽
-    private let totalWidth: CGFloat = 236.0
+    private let totalWidth: CGFloat = 250.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
         HStack(spacing: 5) {
             if vm.isOnline, let d = vm.data {
-                // 1. 温控与功耗 (读真实 CPU Die 与总功率)
+                // 1. 温控与功耗
                 HStack(spacing: 3) {
                     Text("\(Int(d.cpuTemp))°")
                         .font(.system(size: 11.5, weight: .semibold, design: .rounded))
@@ -24,16 +23,16 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 2. 实时网络吞吐 (缩紧至 38pt，紧贴分隔线，彻底消除左侧空白)
+                // 2. 实时网络吞吐
                 VStack(alignment: .trailing, spacing: 0) {
-                    HStack(spacing: 1) {
+                    HStack(spacing: 2) {
                         Text("↓")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
                         Text(formatSpeedNoDecimal(d.netRxBytesPerSec))
                             .foregroundColor(.white)
                     }
-                    HStack(spacing: 1) {
+                    HStack(spacing: 2) {
                         Text("↑")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
@@ -43,18 +42,20 @@ struct MenuBarStatusView: View {
                 }
                 .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                 .monospacedDigit()
-                .frame(width: 38, alignment: .trailing)
+                .frame(width: 50, alignment: .trailing)
 
                 WhiteDivider()
 
-                // 3. 内存能量条 (超 90% 变黄)
-                let isMemAlert = d.memPercent >= 90.0
-                let memColor: Color = isMemAlert ? .yellow : .white
+                // 3. 内存压力指示 (按 macOS 标准三档：正常=白, 警告=黄, 危险=红)
+                let pressure = d.memPressureLevel ?? 1
+                let memColor: Color = pressure >= 4 ? .red : (pressure >= 2 ? .yellow : .white)
 
                 HStack(spacing: 3) {
                     Text("M")
                         .font(.system(size: 8, weight: .heavy))
-                        .foregroundColor(isMemAlert ? .yellow : .white.opacity(0.6))
+                        // 如果是正常则用透明白，告警则直接用亮色
+                        .foregroundColor(memColor == .white ? .white.opacity(0.6) : memColor)
+                    
                     WhiteCapsuleBar(ratio: d.memPercent / 100.0, tint: memColor)
                         .frame(width: 5, height: 15)
                 }
@@ -62,7 +63,7 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 4. CPU 实时曲线 (2 倍宽：30x15)
+                // 4. CPU 实时曲线
                 HStack(spacing: 3) {
                     Text("C")
                         .font(.system(size: 8, weight: .heavy))
@@ -74,7 +75,7 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 5. 磁盘活动 (2 倍宽：30x15)
+                // 5. 磁盘活动
                 HStack(spacing: 3) {
                     Image(systemName: "internaldrive")
                         .font(.system(size: 9.5))
