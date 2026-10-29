@@ -7,7 +7,6 @@ struct DetailPopoverView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // 顶栏：服务器标题与操作
             HStack {
                 Label("Mac mini (Server)", systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
@@ -28,7 +27,7 @@ struct DetailPopoverView: View {
             if showingSettings {
                 SettingsView(vm: vm, isPresented: $showingSettings)
             } else if let d = vm.data, vm.isOnline {
-                // 核心指标卡片区
+                // 1. 核心指标区
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
                         MetricCard(
@@ -44,7 +43,6 @@ struct DetailPopoverView: View {
                     }
 
                     HStack(spacing: 10) {
-                        // 网络卡片：实时速率无小数 + 64位无溢出累计
                         VStack(alignment: .leading, spacing: 4) {
                             Text("物理网络吞吐 (en0)")
                                 .font(.system(size: 10))
@@ -66,7 +64,6 @@ struct DetailPopoverView: View {
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                        // 全局磁盘卡片：无小数
                         VStack(alignment: .leading, spacing: 4) {
                             Text("全局磁盘活动 (所有介质)")
                                 .font(.system(size: 10))
@@ -85,7 +82,64 @@ struct DetailPopoverView: View {
                     }
                 }
 
-                // 完整铺开 10 个进程（按内存排序）
+                // 2. 核心新增：存储空间与健康 (位置在进程上方，10分钟更新)
+                if let volumes = d.diskVolumes, !volumes.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("存储空间与健康")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("10分钟更新")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary.opacity(0.7))
+                        }
+
+                        VStack(spacing: 7) {
+                            ForEach(volumes) { vol in
+                                VStack(spacing: 3) {
+                                    HStack {
+                                        Text(vol.name)
+                                            .font(.system(size: 11.5, weight: .medium))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        // 数字显示剩余
+                                        Text("剩余 \(formatTotalBytes(vol.freeBytes))")
+                                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                            .foregroundColor(.white.opacity(0.85))
+
+                                        // 低饱和度精致 SMART 标签 (绝不刺眼)
+                                        Text(vol.smartStatus)
+                                            .font(.system(size: 8.5, weight: .medium))
+                                            .padding(.horizontal, 4)
+                                            .padding(.vertical, 1)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 3)
+                                                    .fill(smartBadgeBackground(vol.smartStatus))
+                                            )
+                                            .foregroundColor(smartBadgeForeground(vol.smartStatus))
+                                    }
+
+                                    // 条形显示占用
+                                    GeometryReader { g in
+                                        ZStack(alignment: .leading) {
+                                            Capsule()
+                                                .fill(Color.white.opacity(0.12))
+                                            Capsule()
+                                                .fill(LinearGradient(colors: [Color.white.opacity(0.8), Color.white.opacity(0.5)], startPoint: .leading, endPoint: .trailing))
+                                                .frame(width: max(2, g.size.width * CGFloat(min(max(vol.usedPercent / 100.0, 0), 1))))
+                                        }
+                                    }
+                                    .frame(height: 4.5)
+                                }
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+                }
+
+                // 3. 活跃进程 (按内存排序 Top 10)
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("活跃进程 (按内存排序 Top 10)")
@@ -122,7 +176,6 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                // 快捷运维工具
                 HStack(spacing: 8) {
                     Button("打开屏幕镜像 (VNC)") {
                         if let url = URL(string: "vnc://\(vm.serverIP)") {
@@ -151,7 +204,6 @@ struct DetailPopoverView: View {
         }
         .padding(14)
         .frame(width: 340)
-        // 现代系统级毛玻璃卡片封装（与 macOS 26 原生控制中心质感一致）
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -182,6 +234,20 @@ struct DetailPopoverView: View {
         } else {
             return String(format: "%.2fT", gb / 1024.0)
         }
+    }
+
+    // 柔和低饱和度背景 (绝不突兀)
+    private func smartBadgeBackground(_ status: String) -> Color {
+        if status == "良好" { return Color.white.opacity(0.1) }
+        if status == "故障" { return Color.red.opacity(0.2) }
+        return Color.white.opacity(0.06)
+    }
+
+    // 柔和字体颜色
+    private func smartBadgeForeground(_ status: String) -> Color {
+        if status == "良好" { return Color.white.opacity(0.8) }
+        if status == "故障" { return Color.red.opacity(0.9) }
+        return Color.secondary
     }
 }
 
