@@ -3,92 +3,94 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    // 固定整体尺寸，彻底杜绝跳动伸缩
-    private let totalWidth: CGFloat = 185.0
+    // 全面放大尺度后的总宽度，锁死定宽绝不抖动
+    private let totalWidth: CGFloat = 230.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             if vm.isOnline, let d = vm.data {
-                // 1. 温控与功耗 (固定宽 36)
-                HStack(spacing: 2) {
+                // 1. 温控与功耗 (放宽至 52pt，彻底消除 4... 1... 截断)
+                HStack(spacing: 3) {
                     Text("\(Int(d.cpuTemp))°")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundColor(.white)
                     Text("\(Int(d.powerWatts))W")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.65))
                 }
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
                 .monospacedDigit()
-                .frame(width: 36, alignment: .center)
+                .frame(width: 52, alignment: .center)
 
                 WhiteDivider()
 
-                // 2. 网络吞吐 (仅文字，固定宽 44，等宽排版)
-                VStack(alignment: .trailing, spacing: -1) {
-                    HStack(spacing: 1) {
+                // 2. 实时网络吞吐 (仅文字，字号放大至 9pt 等宽，定宽 52pt)
+                VStack(alignment: .trailing, spacing: 0) {
+                    HStack(spacing: 2) {
                         Text("↓")
-                            .font(.system(size: 7, weight: .bold))
+                            .font(.system(size: 8, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
                         Text(formatSpeed(d.netRxBytesPerSec))
                             .foregroundColor(.white)
                     }
-                    HStack(spacing: 1) {
+                    HStack(spacing: 2) {
                         Text("↑")
-                            .font(.system(size: 7, weight: .bold))
+                            .font(.system(size: 8, weight: .bold))
                             .foregroundColor(.white.opacity(0.6))
                         Text(formatSpeed(d.netTxBytesPerSec))
                             .foregroundColor(.white.opacity(0.85))
                     }
                 }
-                .font(.system(size: 8, weight: .medium, design: .monospaced))
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .monospacedDigit()
-                .frame(width: 44, alignment: .trailing)
+                .frame(width: 52, alignment: .trailing)
 
                 WhiteDivider()
 
-                // 3. 内存能量胶囊 (M + 纯白能量柱，固定宽 16)
-                HStack(spacing: 2) {
+                // 3. 内存能量条 (加粗胶囊，定宽 20pt)
+                HStack(spacing: 3) {
                     Text("M")
-                        .font(.system(size: 7, weight: .heavy))
+                        .font(.system(size: 8.5, weight: .heavy))
                         .foregroundColor(.white.opacity(0.6))
                     WhiteCapsuleBar(ratio: d.memPercent / 100.0)
-                        .frame(width: 4, height: 12)
+                        .frame(width: 5.5, height: 15)
                 }
-                .frame(width: 16, alignment: .center)
+                .frame(width: 20, alignment: .center)
 
                 WhiteDivider()
 
-                // 4. CPU 实时曲线 (去掉数字，纯白平滑折线，固定宽 28)
-                HStack(spacing: 2) {
+                // 4. CPU 实时曲线 (高度升至 15pt，宽 28pt，定宽 38pt)
+                HStack(spacing: 3) {
                     Text("C")
-                        .font(.system(size: 7, weight: .heavy))
+                        .font(.system(size: 8.5, weight: .heavy))
                         .foregroundColor(.white.opacity(0.6))
                     WhiteAreaSparkline(data: vm.cpuHistory)
-                        .frame(width: 22, height: 12)
+                        .frame(width: 28, height: 15)
                 }
-                .frame(width: 28, alignment: .center)
+                .frame(width: 38, alignment: .center)
 
                 WhiteDivider()
 
-                // 5. 磁盘活动 (图标 + 纯白读写波动，固定宽 26)
-                HStack(spacing: 2) {
+                // 5. 磁盘活动 (加大波形至 20x15，定宽 32pt)
+                HStack(spacing: 3) {
                     Image(systemName: "internaldrive")
-                        .font(.system(size: 8))
+                        .font(.system(size: 10))
                         .foregroundColor(.white.opacity(0.6))
 
                     WhiteDualSparkline(
                         topData: vm.diskReadHistory,
                         bottomData: vm.diskWriteHistory
                     )
-                    .frame(width: 16, height: 12)
+                    .frame(width: 20, height: 15)
                 }
-                .frame(width: 26, alignment: .center)
+                .frame(width: 32, alignment: .center)
             } else {
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
                     Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                        .font(.system(size: 12))
                         .foregroundColor(.white)
                     Text("Mac mini 离线")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 11.5, weight: .medium))
                         .foregroundColor(.white.opacity(0.7))
                 }
                 .frame(width: totalWidth, alignment: .center)
@@ -107,29 +109,29 @@ struct MenuBarStatusView: View {
     }
 }
 
-// MARK: - 纯白微细分隔条
+// MARK: - 纯白细分隔条
 struct WhiteDivider: View {
     var body: some View {
         Rectangle()
             .fill(Color.white.opacity(0.2))
-            .frame(width: 0.5, height: 10)
+            .frame(width: 0.5, height: 12)
     }
 }
 
-// MARK: - 纯白极简矢量图表组件
+// MARK: - 纯白高清矢量图表（高度全面升级至 15pt）
 
-/// CPU 面积图 (纯白风格)
+/// CPU 面积图 (提升至 28x15)
 struct WhiteAreaSparkline: View {
     let data: [Double]
-    private let width: CGFloat = 22.0
-    private let height: CGFloat = 12.0
+    private let width: CGFloat = 28.0
+    private let height: CGFloat = 15.0
 
     var body: some View {
         let count = data.count
         let step = count > 1 ? width / CGFloat(count - 1) : width
 
         ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 1.5)
+            RoundedRectangle(cornerRadius: 2)
                 .fill(Color.white.opacity(0.12))
 
             Path { p in
@@ -141,7 +143,7 @@ struct WhiteAreaSparkline: View {
                 p.addLine(to: CGPoint(x: width, y: height))
                 p.closeSubpath()
             }
-            .fill(LinearGradient(colors: [Color.white.opacity(0.4), Color.white.opacity(0.08)], startPoint: .top, endPoint: .bottom))
+            .fill(LinearGradient(colors: [Color.white.opacity(0.45), Color.white.opacity(0.1)], startPoint: .top, endPoint: .bottom))
 
             Path { p in
                 for (i, val) in data.enumerated() {
@@ -153,11 +155,11 @@ struct WhiteAreaSparkline: View {
             .stroke(Color.white, lineWidth: 1.0)
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 1.5))
+        .clipShape(RoundedRectangle(cornerRadius: 2))
     }
 }
 
-/// 磁盘双向图 (纯白中轴风格)
+/// 磁盘双向图 (提升至 20x15)
 struct WhiteDualSparkline: View {
     let topData: [Double]
     let bottomData: [Double]
@@ -169,7 +171,7 @@ struct WhiteDualSparkline: View {
             let midY = h / 2.0
             let step = topData.count > 1 ? w / CGFloat(topData.count - 1) : w
 
-            context.fill(Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 1.5), with: .color(Color.white.opacity(0.12)))
+            context.fill(Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 2), with: .color(Color.white.opacity(0.12)))
 
             var midLine = Path()
             midLine.move(to: CGPoint(x: 0, y: midY))
@@ -195,11 +197,11 @@ struct WhiteDualSparkline: View {
     }
 }
 
-/// 垂直能量胶囊 (纯白风格)
+/// 垂直能量胶囊 (加粗提升至 5.5x15)
 struct WhiteCapsuleBar: View {
     let ratio: Double
-    private let width: CGFloat = 4.0
-    private let height: CGFloat = 12.0
+    private let width: CGFloat = 5.5
+    private let height: CGFloat = 15.0
 
     var body: some View {
         let fillH = max(2, height * CGFloat(min(max(ratio, 0), 1)))
