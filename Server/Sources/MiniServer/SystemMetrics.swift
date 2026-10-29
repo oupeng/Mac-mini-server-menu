@@ -19,15 +19,19 @@ public struct MetricsPayload: Codable {
     public let memPercent: Double
     public let netRxBytesPerSec: UInt64
     public let netTxBytesPerSec: UInt64
+    public let totalRxBytes: UInt64       // 新增：开机累计下载总流量
+    public let totalTxBytes: UInt64       // 新增：开机累计上传总流量
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
-    public let topProcesses: [TopProcess]
+    public let topProcesses: [TopProcess] // 真实 Top 10 进程
 }
 
 public final class MetricsCollector {
     private var lastCPULoad: host_cpu_load_info?
     private var lastNetRx: UInt64 = 0
     private var lastNetTx: UInt64 = 0
+    private var currentTotalRx: UInt64 = 0
+    private var currentTotalTx: UInt64 = 0
     private var lastNetTime: Date = Date()
 
     private var lastDiskRead: UInt64 = 0
@@ -40,7 +44,6 @@ public final class MetricsCollector {
         _ = getDiskThroughput()
     }
 
-    // 1. CPU 使用率 (Mach API)
     public func getCPUUsage() -> Double {
         var cpuInfo = host_cpu_load_info()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
@@ -66,7 +69,6 @@ public final class MetricsCollector {
         return ((userDiff + sysDiff + niceDiff) / totalTicks) * 100.0
     }
 
-    // 2. 内存使用状况
     public func getMemoryStats() -> (usedMB: Int, totalMB: Int, percent: Double) {
         var vmStats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
@@ -90,10 +92,9 @@ public final class MetricsCollector {
         return (usedMB, totalMB, percent)
     }
 
-    // 3. 物理网卡流量 (特别指定 en0 以太网网卡，绝不混淆 VMware / Tailscale / Docker)
-    public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64) {
+    public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64, totalRx: UInt64, totalTx: UInt64) {
         var ifap: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifap) == 0, let first = ifap else { return (0, 0) }
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return (0, 0, 0, 0) }
         defer { freeifaddrs(ifap) }
 
         var currentRx: UInt64 = 0
@@ -101,13 +102,15 @@ public final class MetricsCollector {
 
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let name = String(cString: ptr.pointee.ifa_name)
-            // 锁定 en0 物理网卡，不计入 vmnet/utun 等
             if name == "en0", let data = ptr.pointee.ifa_data {
                 let ifData = data.assumingMemoryBound(to: if_data.self)
                 currentRx += UInt64(ifData.pointee.ifi_ibytes)
                 currentTx += UInt64(ifData.pointee.ifi_obytes)
             }
         }
+
+        currentTotalRx = currentRx
+        currentTotalTx = currentTx
 
         let now = Date()
         let elapsed = max(now.timeIntervalSince(lastNetTime), 0.1)
@@ -117,10 +120,9 @@ public final class MetricsCollector {
         lastNetRx = currentRx
         lastNetTx = currentTx
         lastNetTime = now
-        return (rxSpeed, txSpeed)
+        return (rxSpeed, txSpeed, currentTotalRx, currentTotalTx)
     }
 
-    // 4. 系统磁盘实时读写
     public func getDiskThroughput() -> (readSec: UInt64, writeSec: UInt64) {
         var diskList: io_iterator_t = 0
         let match = IOServiceMatching("IOBlockStorageDriver")
@@ -156,7 +158,40 @@ public final class MetricsCollector {
         return (readSpeed, writeSpeed)
     }
 
-    // 5. 组装全局采集数据包
+    // 真实动态获取 Top 10 活跃进程（极轻量调用 ps 底层内核快照）
+    public func getRealTopProcesses() -> [TopProcess] {
+        let task = Process()
+        task.launchPath = "/bin/ps"
+        task.arguments = ["-Aceo", "%cpu,rss,comm", "-r"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        var result: [TopProcess] = []
+
+        let lines = output.components(separatedBy: "\n")
+        // 跳过第一行表头，提取前 10 个进程
+        for line in lines.dropFirst().prefix(10) {
+            let parts = line.trimmingCharacters(in: .whitespaces)
+                .components(separatedBy: .whitespaces)
+                .filter { !$0.isEmpty }
+
+            if parts.count >= 3 {
+                let cpuVal = Double(parts[0]) ?? 0.0
+                let rssKB = Int(parts[1]) ?? 0
+                let memMB = rssKB / 1024
+                let fullPath = parts[2...].joined(separator: " ")
+                let name = URL(fileURLWithPath: fullPath).lastPathComponent
+                result.append(TopProcess(name: name, cpu: cpuVal, memMB: memMB))
+            }
+        }
+        return result
+    }
+
     public func collectPayload() -> MetricsPayload {
         let cpu = getCPUUsage()
         let mem = getMemoryStats()
@@ -164,6 +199,7 @@ public final class MetricsCollector {
         let disk = getDiskThroughput()
         let temp = SMCReader.shared.getCPUTemperature()
         let power = SMCReader.shared.getSystemPower()
+        let topProcs = getRealTopProcesses()
 
         var load = [Double](repeating: 0.0, count: 3)
         getloadavg(&load, 3)
@@ -174,13 +210,6 @@ public final class MetricsCollector {
         sysctl(&mib, 2, &bootTime, &size, nil, 0)
         let nowSec = time(nil)
         let uptime = max(0, Int(nowSec - bootTime.tv_sec))
-
-        // 仅抓取 Top 3 活跃进程（降低 Mac mini 负担）
-        let topProcs = [
-            TopProcess(name: "VMware Fusion", cpu: 17.2, memMB: 4096),
-            TopProcess(name: "hb-service", cpu: 1.3, memMB: 180),
-            TopProcess(name: "Plex Media Server", cpu: 0.4, memMB: 420)
-        ]
 
         return MetricsPayload(
             uptimeSeconds: uptime,
@@ -193,6 +222,8 @@ public final class MetricsCollector {
             memPercent: mem.percent,
             netRxBytesPerSec: net.rxSec,
             netTxBytesPerSec: net.txSec,
+            totalRxBytes: net.totalRx,
+            totalTxBytes: net.totalTx,
             diskReadBytesPerSec: disk.readSec,
             diskWriteBytesPerSec: disk.writeSec,
             topProcesses: topProcs
