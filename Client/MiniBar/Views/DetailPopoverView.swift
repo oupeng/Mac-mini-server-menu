@@ -79,10 +79,11 @@ struct DetailPopoverView: View {
                 }
             } else {
                 VStack(spacing: 8) {
-                    Text("无法连接至 Mac mini")
+                    Text("无法连接至 Mac mini (WebSocket)")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.red)
-                    Button("重新连接") { vm.fetch() }
+                    // 此处改为 connectWebSocket
+                    Button("重新连接") { vm.connectWebSocket() }
                         .controlSize(.small)
                 }
                 .frame(height: 120)
@@ -145,9 +146,10 @@ struct SettingsView: View {
                 TextField("Port", value: $vm.serverPort, formatter: NumberFormatter())
                     .textFieldStyle(.roundedBorder)
             }
-            Button("保存并刷新") {
+            Button("保存并连接") {
                 isPresented = false
-                vm.startPolling()
+                // 此处改为 connectWebSocket
+                vm.connectWebSocket()
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
