@@ -26,7 +26,7 @@ public struct TopProcessItem: Codable, Identifiable {
 
 @MainActor
 public final class MonitorViewModel: ObservableObject {
-    @AppStorage("serverIP") public var serverIP: String = "192.168.1.100"
+    @AppStorage("serverIP") public var serverIP: String = "192.168.31.25"
     @AppStorage("serverPort") public var serverPort: Int = 29876
 
     @Published public var data: MetricsData?
@@ -35,16 +35,28 @@ public final class MonitorViewModel: ObservableObject {
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var pingTimer: Timer?
+    private var urlSession: URLSession?
 
     public init() {
+        setupSession()
         connectWebSocket()
+    }
+
+    private func setupSession() {
+        let config = URLSessionConfiguration.ephemeral
+        // 核心技术点：清空代理字典，强制绕过系统 HTTP / HTTPS / SOCKS 代理直连局域网！
+        config.connectionProxyDictionary = [:]
+        config.timeoutIntervalForRequest = 3.0
+        config.waitsForConnectivity = false
+        self.urlSession = URLSession(configuration: config)
     }
 
     public func connectWebSocket() {
         disconnect()
 
-        guard let url = URL(string: "ws://\(serverIP):\(serverPort)") else { return }
-        let session = URLSession(configuration: .default)
+        guard let session = urlSession,
+              let url = URL(string: "ws://\(serverIP):\(serverPort)") else { return }
+
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -53,7 +65,6 @@ public final class MonitorViewModel: ObservableObject {
         startHeartbeat()
     }
 
-    // 兼容器方法
     public func fetch() { connectWebSocket() }
     public func startPolling() { connectWebSocket() }
 
@@ -76,7 +87,8 @@ public final class MonitorViewModel: ObservableObject {
                     }
                     self.listenMessage()
 
-                case .failure:
+                case .failure(let error):
+                    print("[WebSocket Error] 详细报错:", error.localizedDescription)
                     self.isOnline = false
                     self.reconnectAfterDelay()
                 }
