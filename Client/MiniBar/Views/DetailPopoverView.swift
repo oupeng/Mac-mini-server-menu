@@ -29,7 +29,6 @@ struct DetailPopoverView: View {
             } else if let d = vm.data, vm.isOnline {
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
-                        // 核心修改：明确三行文本结构，利用进程数和平均负载填充，让卡片高度严丝合缝对齐
                         let loadStr = String(format: "%.2f, %.2f, %.2f", d.loadAvg[0], d.loadAvg[1], d.loadAvg[2])
                         MetricCard(
                             title: "CPU 负荷",
@@ -108,9 +107,11 @@ struct DetailPopoverView: View {
                                             .font(.system(size: 11.5, weight: .medium))
                                             .lineLimit(1)
                                         Spacer()
+                                        
+                                        // 核心修改：使用 .primary 适配白天/黑夜模式
                                         Text("剩余 \(formatTotalBytes(vol.freeBytes))")
                                             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                            .foregroundColor(.white.opacity(0.85))
+                                            .foregroundColor(.primary.opacity(0.85))
 
                                         Text(vol.smartStatus)
                                             .font(.system(size: 8.5, weight: .medium))
@@ -125,10 +126,11 @@ struct DetailPopoverView: View {
 
                                     GeometryReader { g in
                                         ZStack(alignment: .leading) {
+                                            // 进度条背景颜色适配双模式
                                             Capsule()
-                                                .fill(Color.white.opacity(0.12))
+                                                .fill(Color.primary.opacity(0.12))
                                             Capsule()
-                                                .fill(LinearGradient(colors: [Color.white.opacity(0.8), Color.white.opacity(0.5)], startPoint: .leading, endPoint: .trailing))
+                                                .fill(LinearGradient(colors: [Color.primary.opacity(0.6), Color.primary.opacity(0.3)], startPoint: .leading, endPoint: .trailing))
                                                 .frame(width: max(2, g.size.width * CGFloat(min(max(vol.usedPercent / 100.0, 0), 1))))
                                         }
                                     }
@@ -177,6 +179,19 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
+                // 核心修改：加回底部的打开屏幕镜像按钮
+                HStack {
+                    Spacer()
+                    Button("打开屏幕镜像") {
+                        if let url = URL(string: "vnc://DPHomedeMac-mini.local") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .controlSize(.small)
+                    Spacer()
+                }
+                .padding(.top, 4)
+
             } else {
                 VStack(spacing: 8) {
                     Text("无法连接至 Mac mini (WebSocket)")
@@ -196,7 +211,7 @@ struct DetailPopoverView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 0.5)
+                .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -222,14 +237,15 @@ struct DetailPopoverView: View {
         }
     }
 
+    // 颜色适配双模式
     private func smartBadgeBackground(_ status: String) -> Color {
-        if status == "良好" { return Color.white.opacity(0.1) }
+        if status == "良好" { return Color.primary.opacity(0.08) }
         if status == "故障" { return Color.red.opacity(0.2) }
-        return Color.white.opacity(0.06)
+        return Color.primary.opacity(0.04)
     }
 
     private func smartBadgeForeground(_ status: String) -> Color {
-        if status == "良好" { return Color.white.opacity(0.8) }
+        if status == "良好" { return Color.primary.opacity(0.8) }
         if status == "故障" { return Color.red.opacity(0.9) }
         return Color.secondary
     }
@@ -247,8 +263,6 @@ struct MetricCard: View {
                 .foregroundColor(.secondary)
             Text(value)
                 .font(.system(size: 13, weight: .bold, design: .rounded))
-            
-            // 将副标题排版规范化，无论几行都确保行距一致且置顶对齐
             Text(subtitle)
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundColor(.secondary)
@@ -302,7 +316,7 @@ struct SettingsView: View {
                 .controlSize(.small)
 
                 Spacer()
-                
+
                 Button(role: .destructive) {
                     NSApplication.shared.terminate(nil)
                 } label: {
