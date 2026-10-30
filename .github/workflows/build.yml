@@ -16,8 +16,6 @@ jobs:
           cd Server
           # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
           swift build -c release --triple x86_64-apple-macosx10.15
-          
-          # 获取官方标准产物路径
           BIN_PATH=$(swift build -c release --triple x86_64-apple-macosx10.15 --show-bin-path)
           
           # 创建 App Bundle 目录结构
@@ -25,15 +23,15 @@ jobs:
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
           mkdir -p "$APP_BUNDLE/Contents/Resources"
           
-          # 拷贝二进制 (注意将可执行文件改名为 MiniServer，与 Info.plist 保持一致)
+          # 拷贝二进制
           cp "$BIN_PATH/minimonitord" "$APP_BUNDLE/Contents/MacOS/MiniServer"
           
-          # 拷贝 Info.plist (标记为纯菜单栏应用)
+          # 拷贝 Info.plist (标记为纯菜单栏常驻)
           if [ -f "Info.plist" ]; then
             cp Info.plist "$APP_BUNDLE/Contents/"
           fi
           
-          # 注入本地 Ad-hoc 代码签名，确保防火墙放行和双击运行
+          # 注入本地 Ad-hoc 代码签名
           codesign --force --deep --sign - "$APP_BUNDLE"
           
           mkdir -p ../dist/server
@@ -52,33 +50,82 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build MiniBar.app
+      - name: Build MiniBar.app with Adaptive Icons
         run: |
+          # 1. 编译客户端程序
           cd Client
-          # 针对 MacBook Pro (Intel x86_64) 编译
           swift build -c release --arch x86_64
-          
-          # 自动获取 Client 产物路径
           BIN_PATH=$(swift build -c release --arch x86_64 --show-bin-path)
           
-          # 组装原生 macOS .app Bundle 目录结构
           APP_BUNDLE="MiniBar.app"
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
           mkdir -p "$APP_BUNDLE/Contents/Resources"
           
-          # 拷贝编译好的二进制程序
           cp "$BIN_PATH/MiniBar" "$APP_BUNDLE/Contents/MacOS/"
           
-          # 拷贝 Info.plist (包含纯菜单栏、局域网权限声明)
           if [ -f "MiniBar/Info.plist" ]; then
             cp MiniBar/Info.plist "$APP_BUNDLE/Contents/"
           fi
+          cd ..
+
+          # 2. 核心处理：读取根目录的 Light.icns 与 Dark.icns 构建为 macOS 原生自适应深浅色图标集 (Assets.car)
+          if [ -f "Light.icns" ] && [ -f "Dark.icns" ]; then
+            echo "正在为 macOS 构建深浅自适应 AppIcon..."
+            TMP_ASSETS=$(mktemp -d)/Assets.xcassets
+            ICONSET="$TMP_ASSETS/AppIcon.appiconset"
+            mkdir -p "$ICONSET"
+
+            # 提取 1024x1024 尺寸高清 PNG
+            sips -s format png Light.icns --resampleWidth 1024 --out "$ICONSET/icon_light.png"
+            sips -s format png Dark.icns --resampleWidth 1024 --out "$ICONSET/icon_dark.png"
+
+            # 写入符合规范的 luminosity 外观切换元数据
+            cat << 'EOF' > "$ICONSET/Contents.json"
+            {
+              "images" : [
+                {
+                  "idiom" : "mac",
+                  "size" : "1024x1024",
+                  "scale" : "1x",
+                  "filename" : "icon_light.png"
+                },
+                {
+                  "appearances" : [
+                    {
+                      "appearance" : "luminosity",
+                      "value" : "dark"
+                    }
+                  ],
+                  "idiom" : "mac",
+                  "size" : "1024x1024",
+                  "scale" : "1x",
+                  "filename" : "icon_dark.png"
+                }
+              ],
+              "info" : {
+                "author" : "xcode",
+                "version" : 1
+              }
+            }
+          EOF
+
+            # 使用 Apple 原生 actool 编译生成 Assets.car
+            xcrun actool "$TMP_ASSETS" \
+              --compile "Client/$APP_BUNDLE/Contents/Resources" \
+              --platform macosx \
+              --minimum-deployment-target 14.0 \
+              --app-icon AppIcon \
+              --output-partial-info-plist /tmp/partial.plist
+
+            # 复制 Light.icns 作为传统视图与系统的静态兜底
+            cp Light.icns "Client/$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+          fi
           
-          # 关键：给 App 进行本地 Ad-hoc 代码签名，确保双击启动具备完整系统权限
-          codesign --force --deep --sign - "$APP_BUNDLE"
+          # 3. 注入本地签名
+          codesign --force --deep --sign - "Client/$APP_BUNDLE"
           
-          mkdir -p ../dist/client
-          cp -R "$APP_BUNDLE" ../dist/client/
+          mkdir -p dist/client
+          cp -R "Client/$APP_BUNDLE" dist/client/
 
       - name: Upload Client Artifact
         uses: actions/upload-artifact@v4
