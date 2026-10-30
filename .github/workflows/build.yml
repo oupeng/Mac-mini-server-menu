@@ -1,74 +1,38 @@
-name: Manual Build MiniMonitor
-
-on:
-  workflow_dispatch: # 仅手动在 GitHub 页面点击触发
-
-jobs:
-  build-server:
+build-server:
     name: Build Mac mini Server (Catalina x86_64)
     runs-on: macos-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build minimonitord (Target macOS 10.15)
+      - name: Build Server App Bundle
         run: |
           cd Server
-          # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
+          # 编译可执行文件
           swift build -c release --triple x86_64-apple-macosx10.15
-          
-          # 自动获取官方标准产物路径并拷贝
           BIN_PATH=$(swift build -c release --triple x86_64-apple-macosx10.15 --show-bin-path)
           
-          mkdir -p ../dist/server
-          cp "$BIN_PATH/minimonitord" ../dist/server/
-          if [ -f "com.user.minimonitor.plist" ]; then
-            cp com.user.minimonitor.plist ../dist/server/
+          # 创建 App Bundle 目录结构
+          APP_BUNDLE="MiniServer.app"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          
+          # 拷贝二进制
+          cp "$BIN_PATH/minimonitord" "$APP_BUNDLE/Contents/MacOS/MiniServer"
+          
+          # 拷贝 Info.plist (标记为纯菜单栏应用)
+          if [ -f "Info.plist" ]; then
+            cp Info.plist "$APP_BUNDLE/Contents/"
           fi
+          
+          # 注入 Ad-hoc 签名
+          codesign --force --deep --sign - "$APP_BUNDLE"
+          
+          mkdir -p ../dist/server
+          cp -R "$APP_BUNDLE" ../dist/server/
 
       - name: Upload Server Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MacMini-Server-Catalina
+          name: MacMini-Server-App
           path: dist/server/
-
-  build-client:
-    name: Build MacBook Pro Client (macOS 26 x86_64)
-    runs-on: macos-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Build MiniBar.app
-        run: |
-          cd Client
-          # 针对 MacBook Pro 2020 (Intel x86_64) 编译
-          swift build -c release --arch x86_64
-          
-          # 自动获取 Client 产物路径
-          BIN_PATH=$(swift build -c release --arch x86_64 --show-bin-path)
-          
-          # 组装原生 macOS .app Bundle 目录结构
-          APP_BUNDLE="MiniBar.app"
-          mkdir -p "$APP_BUNDLE/Contents/MacOS"
-          mkdir -p "$APP_BUNDLE/Contents/Resources"
-          
-          # 拷贝编译好的二进制程序
-          cp "$BIN_PATH/MiniBar" "$APP_BUNDLE/Contents/MacOS/"
-          
-          # 拷贝 Info.plist (包含纯菜单栏、局域网权限声明)
-          if [ -f "MiniBar/Info.plist" ]; then
-            cp MiniBar/Info.plist "$APP_BUNDLE/Contents/"
-          fi
-          
-          # 关键：给 App 进行本地 Ad-hoc 代码签名，确保双击启动具备完整系统权限
-          codesign --force --deep --sign - "$APP_BUNDLE"
-          
-          mkdir -p ../dist/client
-          cp -R "$APP_BUNDLE" ../dist/client/
-
-      - name: Upload Client Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: MacBook-MiniBar-Client
-          path: dist/client/
