@@ -17,9 +17,8 @@ class ServerLogger {
         
         DispatchQueue.main.async {
             self.logs.append(fullMessage)
-            if self.logs.count > 100 { self.logs.removeFirst() } // 最多保留100条防止内存溢出
+            if self.logs.count > 100 { self.logs.removeFirst() } 
             self.logUpdateHandler?()
-            print(fullMessage) // 调试保留
         }
     }
 }
@@ -29,11 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var webSocketService: WebSocketService?
     
-    // 菜单项引用
     var statusMenuItem: NSMenuItem!
     var toggleMenuItem: NSMenuItem!
     
-    // 错误日志窗口
     var logWindow: NSWindow?
     var logTextView: NSTextView?
 
@@ -41,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 1. 创建状态栏图标
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = NSImage(named: NSImage.networkName) // 使用系统原生网络小图标
+            button.image = createMiniServerIcon() // 使用极简手绘矢量服务器图标
         }
 
         // 2. 构建菜单
@@ -62,18 +59,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         statusItem.menu = menu
         
-        // 3. 绑定日志更新 UI
         ServerLogger.shared.logUpdateHandler = { [weak self] in
             self?.refreshLogText()
         }
         
-        // 4. 默认启动服务
         toggleService()
+    }
+    
+    // 纯代码绘制精致的 16x16 服务器图标，完美适配 Catalina 黑白模式
+    private func createMiniServerIcon() -> NSImage {
+        let size = NSSize(width: 16, height: 16)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSColor.black.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = 1.5
+        // 画出服务器上下两个机架
+        path.appendRoundedRect(NSRect(x: 2, y: 3, width: 12, height: 4), xRadius: 1, yRadius: 1)
+        path.appendRoundedRect(NSRect(x: 2, y: 9, width: 12, height: 4), xRadius: 1, yRadius: 1)
+        path.stroke()
+        img.unlockFocus()
+        img.isTemplate = true // 设为模板，系统自动根据深浅色模式反转
+        return img
     }
     
     @objc func toggleService() {
         if webSocketService != nil {
-            // 当前在运行，执行停止
             webSocketService?.stop()
             webSocketService = nil
             statusMenuItem.title = "状态: 💤 已停止 (零消耗)"
@@ -81,7 +92,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ServerLogger.shared.log("服务已被手动停止")
             if let button = statusItem.button { button.contentTintColor = .secondaryLabelColor }
         } else {
-            // 当前已停止，执行开启
             do {
                 webSocketService = try WebSocketService(port: 29876)
                 webSocketService?.start()
@@ -135,9 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// 纯原生入口
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory) // 声明为纯菜单栏常驻应用
+app.setActivationPolicy(.accessory)
 app.run()
