@@ -15,9 +15,16 @@
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
-    <true/>
+    <true/> <!-- 保持为纯菜单栏常驻应用 -->
     <key>NSHighResolutionCapable</key>
     <true/>
+    
+    <!-- 关键：声明 App 图标资源，激活 macOS 26 的深/浅色模式动态切换 -->
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
