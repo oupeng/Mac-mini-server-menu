@@ -9,7 +9,6 @@ public final class WebSocketService {
     private let queue = DispatchQueue(label: "com.miniserver.ws", qos: .utility)
 
     public init(port: UInt16 = 29876) throws {
-        // 配置原生 WebSocket 协议栈 (macOS 10.15+ 原生支持)
         let wsOptions = NWProtocolWebSocket.Options()
         let tcpOptions = NWProtocolTCP.Options()
         let params = NWParameters(tls: nil, tcp: tcpOptions)
@@ -23,12 +22,31 @@ public final class WebSocketService {
             self?.handleConnection(connection)
         }
         listener.stateUpdateHandler = { state in
-            if state == .ready {
-                print("[MiniServer] WebSocket 监听就绪，端口: 29876 (macOS 10.15)")
+            switch state {
+            case .ready:
+                ServerLogger.shared.log("WebSocket 监听已就绪，端口: 29876")
+            case .failed(let error):
+                ServerLogger.shared.log("监听器发生严重失败: \(error.localizedDescription)", isError: true)
+            case .cancelled:
+                ServerLogger.shared.log("监听器已安全释放")
+            default:
+                break
             }
         }
         listener.start(queue: queue)
         startBroadcasting()
+    }
+
+    // 核心新增：提供安全彻底的关闭机制
+    public func stop() {
+        pushTimer?.cancel()
+        pushTimer = nil
+        
+        for conn in activeConnections {
+            conn.cancel()
+        }
+        activeConnections.removeAll()
+        listener.cancel()
     }
 
     private func handleConnection(_ connection: NWConnection) {
@@ -36,11 +54,14 @@ public final class WebSocketService {
             guard let self = self, let connection = connection else { return }
             switch state {
             case .ready:
+                ServerLogger.shared.log("收到新连接: MacBook Client 已接入")
                 self.queue.async { self.activeConnections.append(connection) }
-            case .failed, .cancelled:
-                self.queue.async {
-                    self.activeConnections.removeAll { $0 === connection }
-                }
+            case .failed(let error):
+                ServerLogger.shared.log("连接异常中断: \(error.localizedDescription)", isError: true)
+                self.queue.async { self.activeConnections.removeAll { $0 === connection } }
+            case .cancelled:
+                ServerLogger.shared.log("Client 已主动断开连接")
+                self.queue.async { self.activeConnections.removeAll { $0 === connection } }
             default:
                 break
             }
@@ -48,16 +69,17 @@ public final class WebSocketService {
         connection.start(queue: queue)
     }
 
-    // 每秒主动向所有连接的 MacBook Pro 推送最新硬件指标
     private func startBroadcasting() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: .seconds(1))
         timer.setEventHandler { [weak self] in
             guard let self = self, !self.activeConnections.isEmpty else { return }
             let payload = self.collector.collectPayload()
-            guard let jsonData = try? JSONEncoder().encode(payload) else { return }
+            guard let jsonData = try? JSONEncoder().encode(payload) else {
+                ServerLogger.shared.log("JSON 打包失败，请检查数据模型", isError: true)
+                return
+            }
 
-            // 原生打包成 WebSocket 文本帧
             let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
             let context = NWConnection.ContentContext(identifier: "metrics", metadata: [metadata])
 
