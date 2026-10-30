@@ -1,7 +1,7 @@
 name: Manual Build MiniMonitor
 
 on:
-  workflow_dispatch: # 仅手动在 GitHub 页面点击触发
+  workflow_dispatch:
 
 jobs:
   build-server:
@@ -11,27 +11,99 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Server App Bundle
+      - name: Build Server App Bundle & Generate App Icon
         run: |
           cd Server
-          # 针对 Mac mini 2012 (x86_64, macOS 10.15 Catalina) 编译
           swift build -c release --triple x86_64-apple-macosx10.15
           BIN_PATH=$(swift build -c release --triple x86_64-apple-macosx10.15 --show-bin-path)
           
-          # 创建 App Bundle 目录结构
           APP_BUNDLE="MiniServer.app"
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
           mkdir -p "$APP_BUNDLE/Contents/Resources"
           
-          # 拷贝二进制
           cp "$BIN_PATH/minimonitord" "$APP_BUNDLE/Contents/MacOS/MiniServer"
           
-          # 拷贝 Info.plist (标记为纯菜单栏常驻)
           if [ -f "Info.plist" ]; then
             cp Info.plist "$APP_BUNDLE/Contents/"
           fi
+
+          # 核心：自动生成深邃科技感 Mac mini Server 专属 App 图标 (.icns)
+          cat << 'EOF' > generate_icon.swift
+          import Cocoa
+
+          let size = NSSize(width: 1024, height: 1024)
+          let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024,
+                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                     isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bytesPerRow: 0, bitsPerPixel: 0)!
+          NSGraphicsContext.saveGraphicsState()
+          NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+
+          // 1. 背景：极客深空灰蓝超质感圆角底板 (Squircle)
+          let bgPath = NSBezierPath(roundedRect: NSRect(x: 100, y: 100, width: 824, height: 824), xRadius: 190, yRadius: 190)
+          let gradient = NSGradient(colors: [
+              NSColor(calibratedRed: 0.12, green: 0.14, blue: 0.20, alpha: 1.0),
+              NSColor(calibratedRed: 0.05, green: 0.06, blue: 0.08, alpha: 1.0)
+          ])!
+          gradient.draw(in: bgPath, angle: -45)
+
+          // 边缘高光
+          bgPath.lineWidth = 6.0
+          NSColor(white: 1.0, alpha: 0.15).setStroke()
+          bgPath.stroke()
+
+          // 2. 绘制主体：立体的铝合金 Mac mini 正面剪影
+          let miniRect = NSRect(x: 232, y: 390, width: 560, height: 210)
+          let miniPath = NSBezierPath(roundedRect: miniRect, xRadius: 46, yRadius: 46)
+          let alumGradient = NSGradient(colors: [
+              NSColor(calibratedRed: 0.88, green: 0.90, blue: 0.92, alpha: 1.0),
+              NSColor(calibratedRed: 0.65, green: 0.68, blue: 0.72, alpha: 1.0)
+          ])!
+          alumGradient.draw(in: miniPath, angle: -90)
           
-          # 注入本地 Ad-hoc 代码签名
+          miniPath.lineWidth = 4.0
+          NSColor(white: 1.0, alpha: 0.6).setStroke()
+          miniPath.stroke()
+
+          // 3. 左侧红外感应口 (黑色圆润矩形)
+          let irRect = NSRect(x: 310, y: 475, width: 60, height: 40)
+          let irPath = NSBezierPath(roundedRect: irRect, xRadius: 10, yRadius: 10)
+          NSColor(calibratedRed: 0.1, green: 0.1, blue: 0.12, alpha: 0.9).setFill()
+          irPath.fill()
+
+          // 4. 右侧常亮白色激光电源指示灯 (带极客青色光晕)
+          let glowPath = NSBezierPath(ovalIn: NSRect(x: 650, y: 460, width: 70, height: 70))
+          NSColor(calibratedRed: 0.0, green: 0.9, blue: 0.8, alpha: 0.3).setFill()
+          glowPath.fill()
+
+          let ledPath = NSBezierPath(ovalIn: NSRect(x: 667, y: 477, width: 36, height: 36))
+          NSColor(white: 1.0, alpha: 1.0).setFill()
+          ledPath.fill()
+
+          NSGraphicsContext.restoreGraphicsState()
+          let data = rep.representation(using: .png, properties: [:])!
+          try! data.write(to: URL(fileURLWithPath: "icon_1024.png"))
+          EOF
+          
+          swift generate_icon.swift
+          
+          # 打包为符合 macOS 标准的 icns 图标文件
+          mkdir -p icon.iconset
+          sips -z 16 16     icon_1024.png --out icon.iconset/icon_16x16.png
+          sips -z 32 32     icon_1024.png --out icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     icon_1024.png --out icon.iconset/icon_32x32.png
+          sips -z 64 64     icon_1024.png --out icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   icon_1024.png --out icon.iconset/icon_128x128.png
+          sips -z 256 256   icon_1024.png --out icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   icon_1024.png --out icon.iconset/icon_256x256.png
+          sips -z 512 512   icon_1024.png --out icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   icon_1024.png --out icon.iconset/icon_512x512.png
+          sips -z 1024 1024 icon_1024.png --out icon.iconset/icon_512x512@2x.png
+          
+          iconutil -c icns icon.iconset -o "$APP_BUNDLE/Contents/Resources/MiniServer.icns"
+          rm -rf icon.iconset icon_1024.png generate_icon.swift
+          
+          # 代码签名
           codesign --force --deep --sign - "$APP_BUNDLE"
           
           mkdir -p ../dist/server
@@ -52,7 +124,6 @@ jobs:
 
       - name: Build MiniBar.app with Adaptive Icons
         run: |
-          # 1. 编译客户端程序
           cd Client
           swift build -c release --arch x86_64
           BIN_PATH=$(swift build -c release --arch x86_64 --show-bin-path)
@@ -68,18 +139,14 @@ jobs:
           fi
           cd ..
 
-          # 2. 核心处理：读取根目录的 Light.icns 与 Dark.icns 构建为 macOS 原生自适应深浅色图标集 (Assets.car)
           if [ -f "Light.icns" ] && [ -f "Dark.icns" ]; then
-            echo "正在为 macOS 构建深浅自适应 AppIcon..."
             TMP_ASSETS=$(mktemp -d)/Assets.xcassets
             ICONSET="$TMP_ASSETS/AppIcon.appiconset"
             mkdir -p "$ICONSET"
 
-            # 提取 1024x1024 尺寸高清 PNG
             sips -s format png Light.icns --resampleWidth 1024 --out "$ICONSET/icon_light.png"
             sips -s format png Dark.icns --resampleWidth 1024 --out "$ICONSET/icon_dark.png"
 
-            # 写入符合规范的 luminosity 外观切换元数据
             cat << 'EOF' > "$ICONSET/Contents.json"
             {
               "images" : [
@@ -109,7 +176,6 @@ jobs:
             }
           EOF
 
-            # 使用 Apple 原生 actool 编译生成 Assets.car
             xcrun actool "$TMP_ASSETS" \
               --compile "Client/$APP_BUNDLE/Contents/Resources" \
               --platform macosx \
@@ -117,11 +183,9 @@ jobs:
               --app-icon AppIcon \
               --output-partial-info-plist /tmp/partial.plist
 
-            # 复制 Light.icns 作为传统视图与系统的静态兜底
             cp Light.icns "Client/$APP_BUNDLE/Contents/Resources/AppIcon.icns"
           fi
           
-          # 3. 注入本地签名
           codesign --force --deep --sign - "Client/$APP_BUNDLE"
           
           mkdir -p dist/client
