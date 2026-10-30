@@ -12,10 +12,12 @@
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
+    <key>CFBundleIconFile</key>
+    <string>MiniServer</string> <!-- 绑定生成的应用图标 -->
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>LSUIElement</key>
-    <true/> <!-- 关键：纯菜单栏常驻 -->
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
