@@ -35,13 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var logTextView: NSTextView?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // 1. 创建状态栏图标
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem.button {
-            button.image = createMiniServerIcon() // 使用极简手绘矢量服务器图标
-        }
-
-        // 2. 构建菜单
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        
         let menu = NSMenu()
         
         statusMenuItem = NSMenuItem(title: "状态: 已停止", action: nil, keyEquivalent: "")
@@ -63,56 +58,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshLogText()
         }
         
-        toggleService()
+        // 初始状态默认为运行中
+        updateStatusItemUI(running: true)
+        startServiceInternal()
     }
     
-    // 纯代码绘制精致的 16x16 服务器图标，完美适配 Catalina 黑白模式
-    private func createMiniServerIcon() -> NSImage {
-        let size = NSSize(width: 16, height: 16)
+    // 核心绘制：Mac mini 正面极简轮廓 + 真实电源指示灯
+    private func createMacMiniStatusIcon(running: Bool) -> NSImage {
+        let size = NSSize(width: 22, height: 16)
         let img = NSImage(size: size)
         img.lockFocus()
+        
+        // 1. 绘制 Mac mini 铝合金正面机身圆角框 (比例对齐 2012 款前脸)
+        let bodyRect = NSRect(x: 2.0, y: 4.5, width: 18.0, height: 7.0)
+        let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: 1.8, yRadius: 1.8)
+        bodyPath.lineWidth = 1.3
         NSColor.black.setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 1.5
-        // 画出服务器上下两个机架
-        path.appendRoundedRect(NSRect(x: 2, y: 3, width: 12, height: 4), xRadius: 1, yRadius: 1)
-        path.appendRoundedRect(NSRect(x: 2, y: 9, width: 12, height: 4), xRadius: 1, yRadius: 1)
-        path.stroke()
+        bodyPath.stroke()
+        
+        // 2. 绘制左侧红外接收器黑斑 (IR Sensor)
+        let irRect = NSRect(x: 4.8, y: 7.0, width: 2.0, height: 2.0)
+        let irPath = NSBezierPath(ovalIn: irRect)
+        NSColor.black.withAlphaComponent(0.4).setFill()
+        irPath.fill()
+        
+        // 3. 绘制右侧电源指示灯 (Power LED)
+        let ledRect = NSRect(x: 16.0, y: 7.0, width: 1.8, height: 1.8)
+        let ledPath = NSBezierPath(ovalIn: ledRect)
+        
+        if running {
+            // 运行状态：点亮指示灯 (微型实体圆点 + 柔光光晕)
+            NSColor.black.setFill()
+            ledPath.fill()
+            
+            // 外圈微弱光晕
+            let glowRect = NSRect(x: 15.1, y: 6.1, width: 3.6, height: 3.6)
+            let glowPath = NSBezierPath(ovalIn: glowRect)
+            NSColor.black.withAlphaComponent(0.25).setFill()
+            glowPath.fill()
+        } else {
+            // 未启动状态：指示灯熄灭 (与机身平齐，仅留微弱凹痕或不画)
+            NSColor.black.withAlphaComponent(0.2).setStroke()
+            ledPath.lineWidth = 0.5
+            ledPath.stroke()
+        }
+        
         img.unlockFocus()
-        img.isTemplate = true // 设为模板，系统自动根据深浅色模式反转
+        img.isTemplate = true // 关键：跟随系统外观自动变为黑/白，彻底清除刺眼绿色！
         return img
+    }
+    
+    private func updateStatusItemUI(running: Bool) {
+        if let button = statusItem.button {
+            button.contentTintColor = nil // 清空任何色彩污染，完美融入系统栏
+            button.image = createMacMiniStatusIcon(running: running)
+        }
     }
     
     @objc func toggleService() {
         if webSocketService != nil {
             webSocketService?.stop()
             webSocketService = nil
-            statusMenuItem.title = "状态: 💤 已停止 (零消耗)"
+            statusMenuItem.title = "状态: 💤 已停止 (指示灯已熄灭)"
             toggleMenuItem.title = "▶ 开启监控服务"
-            ServerLogger.shared.log("服务已被手动停止")
-            if let button = statusItem.button { button.contentTintColor = .secondaryLabelColor }
+            updateStatusItemUI(running: false)
+            ServerLogger.shared.log("服务已被手动暂停")
         } else {
-            do {
-                webSocketService = try WebSocketService(port: 29876)
-                webSocketService?.start()
-                statusMenuItem.title = "状态: 🟢 运行中 (端口 29876)"
-                toggleMenuItem.title = "■ 暂停监控服务"
-                if let button = statusItem.button { button.contentTintColor = .systemGreen }
-            } catch {
-                ServerLogger.shared.log("端口 29876 绑定失败: \(error.localizedDescription)", isError: true)
-                statusMenuItem.title = "状态: ❌ 启动失败"
-                if let button = statusItem.button { button.contentTintColor = .systemRed }
-            }
+            startServiceInternal()
+        }
+    }
+    
+    private func startServiceInternal() {
+        do {
+            webSocketService = try WebSocketService(port: 29876)
+            webSocketService?.start()
+            statusMenuItem.title = "状态: 🟢 运行中 (端口 29876)"
+            toggleMenuItem.title = "■ 暂停监控服务"
+            updateStatusItemUI(running: true)
+        } catch {
+            ServerLogger.shared.log("端口 29876 绑定失败: \(error.localizedDescription)", isError: true)
+            statusMenuItem.title = "状态: ❌ 启动失败"
+            updateStatusItemUI(running: false)
         }
     }
     
     @objc func showLogWindow() {
         if logWindow == nil {
-            let winSize = NSSize(width: 500, height: 300)
+            let winSize = NSSize(width: 520, height: 320)
             let win = NSWindow(contentRect: NSRect(origin: .zero, size: winSize),
                                styleMask: [.titled, .closable, .resizable],
                                backing: .buffered, defer: false)
-            win.title = "MiniBar Server 日志"
+            win.title = "MiniBar Server 运行与错误日志"
             win.center()
             win.isReleasedWhenClosed = false
             
