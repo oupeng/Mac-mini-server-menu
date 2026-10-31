@@ -58,11 +58,11 @@ public final class MetricsCollector {
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
 
-    // 3 秒中频缓存：Top 进程列表（纯内存级计算）
+    // 5 秒中频缓存：全系统 Top 进程（5秒仅跑一次，兼顾低功耗与全局特权）
     private var lastProcessCheckTime: Date = .distantPast
     private var cachedTopProcesses: [TopProcess] = []
     private var cachedProcessCount: Int = 0
-    private let processInterval: TimeInterval = 3.0
+    private let processInterval: TimeInterval = 5.0
 
     public init() {
         _ = getCPUUsage()
@@ -307,57 +307,54 @@ public final class MetricsCollector {
         return map
     }
 
-    // 核心重构：彻底弃用 /bin/ps 子进程！改用纯内核 C API libproc 直接读取进程表
+    // 核心修复：切回带系统特权的 /bin/ps（5秒轻量缓存，精准抓取 root/vmware-vmx 等所有真正的大进程）
     public func getRealTopProcesses() -> (top: [TopProcess], processCount: Int) {
         let now = Date()
         if now.timeIntervalSince(lastProcessCheckTime) < processInterval && !cachedTopProcesses.isEmpty {
             return (cachedTopProcesses, cachedProcessCount)
         }
 
-        // 1. 获取当前系统所有运行中的 PID
-        let numPids = proc_listallpids(nil, 0)
-        guard numPids > 0 else { return (cachedTopProcesses, cachedProcessCount) }
+        let task = Process()
+        task.launchPath = "/bin/ps"
+        // -m: 按内存 RSS 真实从大到小严格排序
+        task.arguments = ["-Aceo", "%cpu,rss,comm", "-m"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
 
-        var pids = [pid_t](repeating: 0, count: Int(numPids))
-        let actualBytes = proc_listallpids(&pids, Int32(MemoryLayout<pid_t>.stride * Int(numPids)))
-        let actualCount = Int(actualBytes) / MemoryLayout<pid_t>.stride
+        guard let output = String(data: data, encoding: .utf8) else { 
+            return (cachedTopProcesses, cachedProcessCount) 
+        }
+        
+        var result: [TopProcess] = []
+        let lines = output.components(separatedBy: "\n")
+        let totalCount = max(0, lines.count - 2)
 
-        var processList: [(name: String, memMB: Int, pid: pid_t)] = []
-        processList.reserveCapacity(actualCount)
+        for line in lines.dropFirst() {
+            if result.count >= 10 { break }
+            let parts = line.trimmingCharacters(in: .whitespaces)
+                .components(separatedBy: .whitespaces)
+                .filter { !$0.isEmpty }
 
-        // 2. 纯内存读取每个进程的物理驻留集 (Resident Memory)
-        for i in 0..<actualCount {
-            let pid = pids[i]
-            if pid <= 0 { continue }
-
-            var taskInfo = proc_taskinfo()
-            let size = Int32(MemoryLayout<proc_taskinfo>.stride)
-            let result = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &taskInfo, size)
-
-            if result == size {
-                let memMB = Int(taskInfo.pti_resident_size / (1024 * 1024))
-                if memMB > 5 { // 仅关注内存大于 5MB 的真实进程
-                    var nameBuffer = [CChar](repeating: 0, count: 256)
-                    proc_name(pid, &nameBuffer, 256)
-                    let name = String(cString: nameBuffer)
-                    if !name.isEmpty {
-                        processList.append((name: name, memMB: memMB, pid: pid))
-                    }
+            if parts.count >= 3 {
+                let cpuVal = Double(parts[0]) ?? 0.0
+                let rssKB = Int(parts[1]) ?? 0
+                let memMB = rssKB / 1024
+                let fullPath = parts[2...].joined(separator: " ")
+                let name = URL(fileURLWithPath: fullPath).lastPathComponent
+                if !name.isEmpty && memMB > 0 {
+                    result.append(TopProcess(name: name, cpu: cpuVal, memMB: memMB))
                 }
             }
         }
-
-        // 3. 在内存中按占用物理内存排序，取前 10
-        processList.sort { $0.memMB > $1.memMB }
-        let top10 = processList.prefix(10).map { item in
-            TopProcess(name: item.name, cpu: 0.0, memMB: item.memMB)
-        }
-
-        cachedTopProcesses = Array(top10)
-        cachedProcessCount = actualCount
+        
+        cachedTopProcesses = result
+        cachedProcessCount = totalCount
         lastProcessCheckTime = now
-
-        return (cachedTopProcesses, cachedProcessCount)
+        
+        return (result, totalCount)
     }
 
     public func collectPayload() -> MetricsPayload {
@@ -368,7 +365,7 @@ public final class MetricsCollector {
         let disk = getDiskThroughput()
         let temp = SMCReader.shared.getCPUTemperature()
         let power = SMCReader.shared.getSystemPower()
-        let processData = getRealTopProcesses() // 纯内存毫秒级读取，0 子进程开销！
+        let processData = getRealTopProcesses()
         let volumes = getDiskVolumesCached()
 
         var load = [Double](repeating: 0.0, count: 3)
