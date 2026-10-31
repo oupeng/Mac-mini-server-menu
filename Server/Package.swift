@@ -8,7 +8,7 @@ let package = Package(
         .executable(name: "minimonitord", targets: ["MiniServer"])
     ],
     targets: [
-        .target(
+        .executableTarget(
             name: "MiniServer",
             dependencies: []
         )
