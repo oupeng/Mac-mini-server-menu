@@ -10,12 +10,12 @@ public final class WebSocketService {
 
     public init(port: UInt16 = 29876) throws {
         let wsOptions = NWProtocolWebSocket.Options()
-        // 自动响应客户端的心跳 Ping 帧
+        // 自动响应客户端心跳
         wsOptions.autoReplyPing = true
 
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.enableKeepalive = true
-        tcpOptions.keepaliveIdle = 5 // 5秒空闲即发探测包
+        tcpOptions.keepaliveIdle = 10 
 
         let params = NWParameters(tls: nil, tcp: tcpOptions)
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
@@ -49,7 +49,6 @@ public final class WebSocketService {
 
         queue.async {
             for conn in self.activeConnections {
-                // 安全发送关闭帧给客户端
                 let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
                 let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
                 conn.send(content: nil, contentContext: context, isComplete: true, completion: .contentProcessed({ _ in
@@ -69,15 +68,20 @@ public final class WebSocketService {
                 ServerLogger.shared.log("收到新连接: 客户端已接入")
                 self.queue.async {
                     self.activeConnections.append(connection)
-                    // 核心修复：连接就绪后立刻启动持续的 receive 接收循环
                     self.receiveNextMessage(on: connection)
                 }
             case .failed(let error):
-                ServerLogger.shared.log("连接异常中断: \(error.localizedDescription)", isError: true)
+                // 只有物理掉线、网线拔出等非正常退出才报错误
+                let nsError = error as NSError
+                if nsError.code != 0 && nsError.code != Int(POSIXError.ECANCELED.rawValue) {
+                    ServerLogger.shared.log("网络物理链路断开: \(error.localizedDescription)", isError: true)
+                }
                 self.cleanupConnection(connection)
             case .cancelled:
-                ServerLogger.shared.log("连接已彻底注销释放")
-                self.cleanupConnection(connection)
+                // 安全注销，静默移除，不重复报警
+                self.queue.async {
+                    self.activeConnections.removeAll { $0 === connection }
+                }
             default:
                 break
             }
@@ -85,26 +89,33 @@ public final class WebSocketService {
         connection.start(queue: queue)
     }
 
-    /// 核心修复：持续读取客户端的数据、握手与 Pong，杜绝缓冲区打满和静默断连
+    /// 核心核查点：全面拦截正常的系统级退出（Code 0 和 Code 89）
     private func receiveNextMessage(on connection: NWConnection) {
         connection.receiveMessage { [weak self, weak connection] (content, context, isComplete, error) in
             guard let self = self, let connection = connection else { return }
 
             if let error = error {
-                ServerLogger.shared.log("读取客户端消息失败: \(error.localizedDescription)", isError: true)
+                let nsError = error as NSError
+                // Code 0: 客户端合盖/退出主动断连 (EOF)
+                // Code 89 (ECANCELED): 服务端或系统主动取消该连接
+                if nsError.code == 0 || nsError.code == Int(POSIXError.ECANCELED.rawValue) {
+                    ServerLogger.shared.log("客户端已离线 (休眠、断网或退出)")
+                } else {
+                    ServerLogger.shared.log("读取客户端消息失败: \(error.localizedDescription)", isError: true)
+                }
                 self.cleanupConnection(connection)
                 return
             }
 
-            // 检查是否是关闭帧
+            // 识别客户端的优雅关闭帧
             if let metadata = context?.protocolMetadata.first as? NWProtocolWebSocket.Metadata,
                metadata.opcode == .close {
-                ServerLogger.shared.log("客户端请求正常关闭连接")
+                ServerLogger.shared.log("收到客户端优雅关闭通知")
                 self.cleanupConnection(connection)
                 return
             }
 
-            // 循环持续监听下一次消息输入
+            // 保持持续监听
             self.queue.async {
                 self.receiveNextMessage(on: connection)
             }
@@ -113,8 +124,10 @@ public final class WebSocketService {
 
     private func cleanupConnection(_ connection: NWConnection) {
         queue.async {
-            self.activeConnections.removeAll { $0 === connection }
-            connection.cancel()
+            if self.activeConnections.contains(where: { $0 === connection }) {
+                self.activeConnections.removeAll { $0 === connection }
+                connection.cancel()
+            }
         }
     }
 
@@ -135,7 +148,11 @@ public final class WebSocketService {
             for conn in self.activeConnections {
                 conn.send(content: jsonData, contentContext: context, isComplete: true, completion: .contentProcessed({ [weak self, weak conn] sendError in
                     if let sendError = sendError, let conn = conn {
-                        ServerLogger.shared.log("推送数据失败，清理断开的连接: \(sendError.localizedDescription)", isError: true)
+                        let nsError = sendError as NSError
+                        // 推送失败时同样过滤 Code 0 / 89
+                        if nsError.code != 0 && nsError.code != Int(POSIXError.ECANCELED.rawValue) {
+                            ServerLogger.shared.log("向客户端推送失败: \(sendError.localizedDescription)", isError: true)
+                        }
                         self?.cleanupConnection(conn)
                     }
                 }))
