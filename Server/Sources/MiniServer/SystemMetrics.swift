@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import IOKit
+import CSMART
 
 public struct TopProcess: Codable {
     public let name: String
@@ -65,10 +66,16 @@ public final class MetricsCollector {
     private var lastDiskWrite: UInt64 = 0
     private var lastDiskTime: Date = Date()
 
+    // 10 分钟低频缓存：磁盘空间
     private var lastDiskSpaceCheckTime: Date = .distantPast
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
 
+    // 外接盘 SMART 长周期缓存（6 小时更新一次，且休眠时绝不打扰）
+    private var smartCache: [String: (status: String, checkedAt: Date)] = [:]
+    private let externalSmartInterval: TimeInterval = 21600
+
+    // 5 秒中频缓存：全系统 Top 进程
     private var lastProcessCheckTime: Date = .distantPast
     private var cachedTopProcesses: [TopProcess] = []
     private var cachedProcessCount: Int = 0
@@ -96,7 +103,6 @@ public final class MetricsCollector {
             return 0.0
         }
 
-        // 修复 Bug 2：使用溢出安全减法 &-，彻底杜绝 UInt32 长期运行绕回归零时下溢崩溃
         let userDiff = Double(cpuInfo.cpu_ticks.0 &- prev.cpu_ticks.0)
         let sysDiff  = Double(cpuInfo.cpu_ticks.1 &- prev.cpu_ticks.1)
         let idleDiff = Double(cpuInfo.cpu_ticks.2 &- prev.cpu_ticks.2)
@@ -196,7 +202,7 @@ public final class MetricsCollector {
 
             while cursor < end && cursor.distance(to: end) >= MemoryLayout<if_msghdr>.size {
                 let msgHdr = cursor.withMemoryRebound(to: if_msghdr.self, capacity: 1) { $0.pointee }
-                if msgHdr.ifm_msglen == 0 { break } // 防死循环保护
+                if msgHdr.ifm_msglen == 0 { break }
 
                 if msgHdr.ifm_type == RTM_IFINFO2 && cursor.distance(to: end) >= MemoryLayout<if_msghdr2>.size {
                     let if2m = cursor.withMemoryRebound(to: if_msghdr2.self, capacity: 1) { $0.pointee }
@@ -300,9 +306,9 @@ public final class MetricsCollector {
                     var displayName = URL(fileURLWithPath: mntOn).lastPathComponent
                     if mntOn == "/" { displayName = "Macintosh HD" }
 
-                    // 修复 Bug 1：从真实 BSD 设备节点向上追溯物理磁盘 SMART（绝不再误判为“良好”）
                     let devName = URL(fileURLWithPath: mntFrom).lastPathComponent
-                    let smart = findSmartStatus(forBSDName: devName)
+                    let isExternal = (mntOn != "/")
+                    let smart = getSmartStatusSafely(mountPoint: mntOn, bsdName: devName, isExternal: isExternal, now: now)
 
                     results.append(DiskVolumeInfo(
                         name: displayName,
@@ -321,29 +327,67 @@ public final class MetricsCollector {
         return results
     }
 
-    // 纯内存沿着 IOKit 节点树向上查找物理 IOBlockStorageDevice 的缓存 SMART 状态（零硬件唤醒）
-    private func findSmartStatus(forBSDName bsdName: String) -> String {
+    private func getSmartStatusSafely(mountPoint: String, bsdName: String, isExternal: Bool, now: Date) -> String {
+        // 外接盘采取 6 小时超长缓存保护，绝不定时惊扰机械盘
+        if isExternal, let cached = smartCache[mountPoint], now.timeIntervalSince(cached.checkedAt) < externalSmartInterval {
+            return cached.status
+        }
+
+        let status = queryIOKitSmartStatus(forBSDName: bsdName, fallbackCache: smartCache[mountPoint]?.status)
+        if status != "待机" {
+            smartCache[mountPoint] = (status: status, checkedAt: now)
+        }
+        return status
+    }
+
+    private func isEntryAsleep(_ entry: io_registry_entry_t) -> Bool {
+        guard entry != 0 else { return false }
+        var props: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(entry, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+              let dict = props?.takeRetainedValue() as? [String: Any],
+              let pm = dict["IOPowerManagement"] as? [String: Any] else {
+            return false
+        }
+        if let currentPower = pm["CurrentPowerState"] as? Int,
+           let maxPower = pm["MaxPowerState"] as? Int,
+           currentPower < maxPower {
+            return true
+        }
+        if let devPower = pm["DevicePowerState"] as? Int, devPower == 0 {
+            return true
+        }
+        return false
+    }
+
+    // 沿着 IOKit 设备树向上找到 IOBlockStorageDevice，检查电源状态唤醒后通过 CSMART 读取原生 SMARTLib / SATSMARTLib
+    private func queryIOKitSmartStatus(forBSDName bsdName: String, fallbackCache: String?) -> String {
         guard !bsdName.isEmpty,
               let match = IOBSDNameMatching(kIOMasterPortDefault, 0, bsdName) else {
-            return "不支持"
+            return fallbackCache ?? "不支持"
         }
         var current = IOServiceGetMatchingService(kIOMasterPortDefault, match)
-        if current == 0 { return "不支持" }
+        if current == 0 { return fallbackCache ?? "不支持" }
 
         var depth = 0
         while current != 0 && depth < 16 {
             if IOObjectConformsTo(current, "IOBlockStorageDevice") != 0 {
-                var props: Unmanaged<CFMutableDictionary>?
-                if IORegistryEntryCreateCFProperties(current, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
-                   let dict = props?.takeRetainedValue() as? [String: Any],
-                   let smart = dict["SMART Status"] as? String {
+                // 先查自身及直属父节点 (如 SATSMARTDriver) 的电源状态，防止唤醒正在休眠的机械硬盘
+                var parent: io_registry_entry_t = 0
+                let hasParent = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) == kIOReturnSuccess
+                let asleep = isEntryAsleep(current) || (hasParent && isEntryAsleep(parent))
+                if hasParent { IOObjectRelease(parent) }
+
+                if asleep {
                     IOObjectRelease(current)
-                    if smart == "Verified" { return "良好" }
-                    if smart == "Failing" { return "故障" }
-                    return "不支持"
+                    return fallbackCache ?? "待机"
                 }
+
+                // 只有在硬盘醒着时，调用原生 CSMART (IOATASMARTInterface) 读取健康度
+                let code = csmart_check_service(current)
                 IOObjectRelease(current)
-                return "不支持"
+                if code == 1 { return "良好" }
+                if code == 2 { return "故障" }
+                return fallbackCache ?? "不支持"
             }
 
             var parent: io_registry_entry_t = 0
@@ -354,7 +398,7 @@ public final class MetricsCollector {
             depth += 1
         }
         if current != 0 { IOObjectRelease(current) }
-        return "不支持"
+        return fallbackCache ?? "不支持"
     }
 
     public func getRealTopProcesses() -> (top: [TopProcess], processCount: Int) {
