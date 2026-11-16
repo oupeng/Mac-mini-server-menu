@@ -21,7 +21,6 @@ public struct KernelHealthInfo: Codable {
     public let mbufCount: Int
     public let zleakActive: Int
 
-    /// 评估内核整体健康等级: 1 = 良好, 2 = 预警, 3 = 危险
     public func healthLevel(processCount: Int) -> Int {
         let fileRatio = maxFiles > 0 ? Double(openFiles) / Double(maxFiles) : 0.0
         let procRatio = maxProc > 0 ? Double(processCount) / Double(maxProc) : 0.0
@@ -60,8 +59,7 @@ public struct MetricsData: Codable {
     public let kernelHealth: KernelHealthInfo?
 }
 
-public struct TopProcessItem: Codable, Identifiable {
-    public var id: String { name + "\(cpu)" + "\(memMB)" }
+public struct TopProcessItem: Codable {
     public let name: String
     public let cpu: Double
     public let memMB: Int
@@ -85,6 +83,7 @@ public final class MonitorViewModel: ObservableObject {
     private var webSocketTask: URLSessionWebSocketTask?
     private var pingTimer: Timer?
     private var urlSession: URLSession?
+    private var reconnectWorkItem: DispatchWorkItem?
 
     public init() {
         setupSession()
@@ -109,17 +108,18 @@ public final class MonitorViewModel: ObservableObject {
         self.webSocketTask = task
         task.resume()
 
-        listenMessage()
+        listenMessage(for: task)
         startHeartbeat()
     }
 
     public func fetch() { connectWebSocket() }
     public func startPolling() { connectWebSocket() }
 
-    private func listenMessage() {
-        webSocketTask?.receive { [weak self] result in
+    // 修复 Bug 3：绑定具体 task 实例并做 === 校验，杜绝旧连接取消回调误杀新连接
+    private func listenMessage(for task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.webSocketTask === task else { return }
                 switch result {
                 case .success(let message):
                     self.isOnline = true
@@ -133,7 +133,7 @@ public final class MonitorViewModel: ObservableObject {
                     @unknown default:
                         break
                     }
-                    self.listenMessage()
+                    self.listenMessage(for: task)
 
                 case .failure:
                     self.isOnline = false
@@ -166,10 +166,11 @@ public final class MonitorViewModel: ObservableObject {
         pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let task = self.webSocketTask else { return }
-                task.sendPing { error in
+                task.sendPing { [weak self] error in
                     if error != nil {
                         Task { @MainActor [weak self] in
-                            self?.isOnline = false
+                            guard let self = self, self.webSocketTask === task else { return }
+                            self.isOnline = false
                         }
                     }
                 }
@@ -179,14 +180,18 @@ public final class MonitorViewModel: ObservableObject {
 
     private func reconnectAfterDelay() {
         disconnect()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+        let item = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 self?.connectWebSocket()
             }
         }
+        reconnectWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
     }
 
     public func disconnect() {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         pingTimer?.invalidate()
         pingTimer = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
