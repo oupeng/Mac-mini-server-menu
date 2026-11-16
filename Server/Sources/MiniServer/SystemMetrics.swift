@@ -18,6 +18,17 @@ public struct DiskVolumeInfo: Codable, Identifiable {
     public let smartStatus: String
 }
 
+public struct KernelHealthInfo: Codable {
+    public let wiredMB: Int
+    public let wiredPercent: Double
+    public let openFiles: Int
+    public let maxFiles: Int
+    public let maxProc: Int
+    public let mbufLimReached: Int
+    public let mbufCount: Int
+    public let zleakActive: Int
+}
+
 public struct MetricsPayload: Codable {
     public let uptimeSeconds: Int
     public let loadAvg: [Double]
@@ -39,6 +50,7 @@ public struct MetricsPayload: Codable {
     public let processCount: Int
     public let topProcesses: [TopProcess]
     public let diskVolumes: [DiskVolumeInfo]
+    public let kernelHealth: KernelHealthInfo
 }
 
 public final class MetricsCollector {
@@ -58,7 +70,7 @@ public final class MetricsCollector {
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
 
-    // 5 秒中频缓存：全系统 Top 进程（5秒仅跑一次，兼顾低功耗与全局特权）
+    // 5 秒中频缓存：全系统 Top 进程
     private var lastProcessCheckTime: Date = .distantPast
     private var cachedTopProcesses: [TopProcess] = []
     private var cachedProcessCount: Int = 0
@@ -97,7 +109,7 @@ public final class MetricsCollector {
         return ((userDiff + sysDiff + niceDiff) / totalTicks) * 100.0
     }
 
-    public func getMemoryStats() -> (usedMB: Int, totalMB: Int, percent: Double, pressurePercent: Double) {
+    public func getMemoryStats() -> (usedMB: Int, totalMB: Int, percent: Double, pressurePercent: Double, wiredMB: Int, wiredPercent: Double) {
         var vmStats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &vmStats) {
@@ -107,7 +119,7 @@ public final class MetricsCollector {
         }
         let totalBytes = ProcessInfo.processInfo.physicalMemory
         let totalMB = Int(totalBytes / (1024 * 1024))
-        guard result == KERN_SUCCESS else { return (0, totalMB, 0.0, 0.0) }
+        guard result == KERN_SUCCESS else { return (0, totalMB, 0.0, 0.0, 0, 0.0) }
 
         let pageSize = UInt64(vm_kernel_page_size)
         let active = UInt64(vmStats.active_count) * pageSize
@@ -118,8 +130,10 @@ public final class MetricsCollector {
         let usedMB = Int(usedBytes / (1024 * 1024))
         let percent = (Double(usedBytes) / Double(totalBytes)) * 100.0
         let pressurePercent = (Double(wired + compressed) / Double(totalBytes)) * 100.0
+        let wiredMB = Int(wired / (1024 * 1024))
+        let wiredPercent = (Double(wired) / Double(totalBytes)) * 100.0
 
-        return (usedMB, totalMB, percent, min(100.0, pressurePercent))
+        return (usedMB, totalMB, percent, min(100.0, pressurePercent), wiredMB, wiredPercent)
     }
 
     public func getMemoryPressure() -> (level: Int, swapMB: Int) {
@@ -136,6 +150,33 @@ public final class MetricsCollector {
             }
         }
         return (Int(level), swapUsedMB)
+    }
+
+    private func readSysctlInt(_ name: String) -> Int {
+        var val32: Int32 = 0
+        var size32 = MemoryLayout<Int32>.size
+        if sysctlbyname(name, &val32, &size32, nil, 0) == 0 {
+            return Int(val32)
+        }
+        var val64: Int64 = 0
+        var size64 = MemoryLayout<Int64>.size
+        if sysctlbyname(name, &val64, &size64, nil, 0) == 0 {
+            return Int(val64)
+        }
+        return 0
+    }
+
+    public func getKernelHealth(wiredMB: Int, wiredPercent: Double) -> KernelHealthInfo {
+        return KernelHealthInfo(
+            wiredMB: wiredMB,
+            wiredPercent: wiredPercent,
+            openFiles: readSysctlInt("kern.num_files"),
+            maxFiles: readSysctlInt("kern.maxfiles"),
+            maxProc: readSysctlInt("kern.maxproc"),
+            mbufLimReached: readSysctlInt("kern.ipc.sbmb_limreached"),
+            mbufCount: readSysctlInt("kern.ipc.sbmb_cnt"),
+            zleakActive: readSysctlInt("kern.zleak.active")
+        )
     }
 
     public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64, totalRx: UInt64, totalTx: UInt64) {
@@ -307,7 +348,6 @@ public final class MetricsCollector {
         return map
     }
 
-    // 核心修复：切回带系统特权的 /bin/ps（5秒轻量缓存，精准抓取 root/vmware-vmx 等所有真正的大进程）
     public func getRealTopProcesses() -> (top: [TopProcess], processCount: Int) {
         let now = Date()
         if now.timeIntervalSince(lastProcessCheckTime) < processInterval && !cachedTopProcesses.isEmpty {
@@ -316,7 +356,6 @@ public final class MetricsCollector {
 
         let task = Process()
         task.launchPath = "/bin/ps"
-        // -m: 按内存 RSS 真实从大到小严格排序
         task.arguments = ["-Aceo", "%cpu,rss,comm", "-m"]
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -367,6 +406,7 @@ public final class MetricsCollector {
         let power = SMCReader.shared.getSystemPower()
         let processData = getRealTopProcesses()
         let volumes = getDiskVolumesCached()
+        let kernelHealth = getKernelHealth(wiredMB: mem.wiredMB, wiredPercent: mem.wiredPercent)
 
         var load = [Double](repeating: 0.0, count: 3)
         getloadavg(&load, 3)
@@ -398,7 +438,8 @@ public final class MetricsCollector {
             diskWriteBytesPerSec: disk.writeSec,
             processCount: processData.processCount,
             topProcesses: processData.top,
-            diskVolumes: volumes
+            diskVolumes: volumes,
+            kernelHealth: kernelHealth
         )
     }
 }
