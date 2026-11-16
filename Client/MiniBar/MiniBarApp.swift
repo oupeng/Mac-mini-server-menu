@@ -103,13 +103,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panelWidth: CGFloat = 340.0
         let panelHeight = hostingController.view.fittingSize.height
 
-        let targetX = barScreenRect.midX - (panelWidth / 2.0)
-        let targetY = barScreenRect.minY - panelHeight - 6.0
-
         let currentScreen = win.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        let safeX = max(10.0, min(currentScreen.frame.maxX - panelWidth - 10.0, targetX))
+        let targetX = barScreenRect.midX - (panelWidth / 2.0)
+        let safeX = max(currentScreen.visibleFrame.minX + 10.0, min(currentScreen.visibleFrame.maxX - panelWidth - 10.0, targetX))
+        
+        // 底部防裁切保护：若笔记本小屏高度紧凑，确保面板底端不被 Dock/屏幕底边挡住
+        let rawY = barScreenRect.minY - panelHeight - 6.0
+        let safeY = max(currentScreen.visibleFrame.minY + 10.0, rawY)
 
-        floatingPanel.setFrame(NSRect(x: safeX, y: targetY, width: panelWidth, height: panelHeight), display: true)
+        floatingPanel.setFrame(NSRect(x: safeX, y: safeY, width: panelWidth, height: panelHeight), display: true)
         floatingPanel.orderFront(nil)
         floatingPanel.makeKey()
 
