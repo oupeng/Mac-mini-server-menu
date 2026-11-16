@@ -3,11 +3,12 @@ import SwiftUI
 struct MenuBarStatusView: View {
     @ObservedObject var vm: MonitorViewModel
 
-    // 因为内存模块变宽，整体物理定宽扩充至 275.0
     private let totalWidth: CGFloat = 275.0
     private let barHeight: CGFloat = 22.0
 
     var body: some View {
+        let kernelLevel = vm.data?.kernelHealth?.healthLevel(processCount: vm.data?.processCount ?? 0) ?? 1
+
         HStack(spacing: 5) {
             if vm.isOnline, let d = vm.data {
                 // 1. 温控与功耗
@@ -47,7 +48,7 @@ struct MenuBarStatusView: View {
 
                 WhiteDivider()
 
-                // 3. 核心修改：内存压力面积图 (白/黄/红三档动态着色)
+                // 3. 内存压力面积图
                 let pressure = d.memPressureLevel ?? 1
                 let memColor: Color = pressure >= 4 ? .red : (pressure >= 2 ? .yellow : .white)
 
@@ -56,7 +57,6 @@ struct MenuBarStatusView: View {
                         .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(memColor == .white ? .white.opacity(0.6) : memColor)
                     
-                    // 完全替换为活动监视器风格的面积图，高度反映真实内存核心压力
                     WideAreaSparkline(data: vm.memPressureHistory, tint: memColor)
                         .frame(width: 30, height: 15)
                 }
@@ -103,6 +103,14 @@ struct MenuBarStatusView: View {
         }
         .padding(.horizontal, 4)
         .frame(width: totalWidth, height: barHeight)
+        .overlay(alignment: .topLeading) {
+            if vm.isOnline && kernelLevel >= 2 {
+                Circle()
+                    .fill(kernelLevel >= 3 ? Color.red : Color.yellow)
+                    .frame(width: 4.5, height: 4.5)
+                    .offset(x: 3, y: 3)
+            }
+        }
     }
 
     private func formatSpeedNoDecimal(_ bytes: UInt64) -> String {
@@ -123,10 +131,9 @@ struct WhiteDivider: View {
     }
 }
 
-// 修改面积图使其支持外界传入动态色彩 (tint)
 struct WideAreaSparkline: View {
     let data: [Double]
-    var tint: Color = .white // 默认白色
+    var tint: Color = .white
     private let width: CGFloat = 30.0
     private let height: CGFloat = 15.0
 
