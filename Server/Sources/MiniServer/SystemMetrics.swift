@@ -28,6 +28,7 @@ public struct KernelHealthInfo: Codable {
     public let mbufLimReached: Int
     public let mbufCount: Int
     public let zleakActive: Int
+    public let recentAlerts: Int // 本次开机后 24 小时内的 Jetsam/看门狗/Panic 次数
 }
 
 public struct MetricsPayload: Codable {
@@ -71,7 +72,7 @@ public final class MetricsCollector {
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
 
-    // 外接盘 SMART 长周期缓存（6 小时更新一次，且休眠时绝不打扰）
+    // 外接盘 SMART 长周期缓存（6 小时更新一次，休眠绝不打扰）
     private var smartCache: [String: (status: String, checkedAt: Date)] = [:]
     private let externalSmartInterval: TimeInterval = 21600
 
@@ -80,6 +81,11 @@ public final class MetricsCollector {
     private var cachedTopProcesses: [TopProcess] = []
     private var cachedProcessCount: Int = 0
     private let processInterval: TimeInterval = 5.0
+
+    // 60 秒低频缓存：内置 SSD 诊断报告哨兵
+    private var lastAlertCheckTime: Date = .distantPast
+    private var cachedRecentAlerts: Int = 0
+    private let alertCheckInterval: TimeInterval = 60.0
 
     public init() {
         _ = getCPUUsage()
@@ -171,7 +177,40 @@ public final class MetricsCollector {
         return 0
     }
 
-    public func getKernelHealth(wiredMB: Int, wiredPercent: Double) -> KernelHealthInfo {
+    // 哨兵：仅扫描内置盘 /Library/Logs/DiagnosticReports 目录，捕捉 JetsamEvent / 看门狗超时 / Panic
+    private func getRecentDiagnosticAlertsCount(bootDate: Date) -> Int {
+        let now = Date()
+        if now.timeIntervalSince(lastAlertCheckTime) < alertCheckInterval {
+            return cachedRecentAlerts
+        }
+
+        let dirPath = "/Library/Logs/DiagnosticReports"
+        let cutoff = max(bootDate, now.addingTimeInterval(-86400))
+        var alertCount = 0
+
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: dirPath) {
+            for name in files {
+                let isJetsam = name.hasPrefix("JetsamEvent-") && name.hasSuffix(".diag")
+                let isWatchdog = name.contains("userspace_watchdog_timeout") && name.hasSuffix(".spin")
+                let isPanic = name.hasSuffix(".panic")
+
+                if isJetsam || isWatchdog || isPanic {
+                    let fullPath = dirPath + "/" + name
+                    if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath),
+                       let modDate = (attrs[.modificationDate] as? Date) ?? (attrs[.creationDate] as? Date),
+                       modDate > cutoff {
+                        alertCount += 1
+                    }
+                }
+            }
+        }
+
+        cachedRecentAlerts = alertCount
+        lastAlertCheckTime = now
+        return alertCount
+    }
+
+    public func getKernelHealth(wiredMB: Int, wiredPercent: Double, bootDate: Date) -> KernelHealthInfo {
         return KernelHealthInfo(
             wiredMB: wiredMB,
             wiredPercent: wiredPercent,
@@ -180,7 +219,8 @@ public final class MetricsCollector {
             maxProc: readSysctlInt("kern.maxproc"),
             mbufLimReached: readSysctlInt("kern.ipc.sbmb_limreached"),
             mbufCount: readSysctlInt("kern.ipc.sbmb_cnt"),
-            zleakActive: readSysctlInt("kern.zleak.active")
+            zleakActive: readSysctlInt("kern.zleak.active"),
+            recentAlerts: getRecentDiagnosticAlertsCount(bootDate: bootDate)
         )
     }
 
@@ -328,7 +368,6 @@ public final class MetricsCollector {
     }
 
     private func getSmartStatusSafely(mountPoint: String, bsdName: String, isExternal: Bool, now: Date) -> String {
-        // 外接盘采取 6 小时超长缓存保护，绝不定时惊扰机械盘
         if isExternal, let cached = smartCache[mountPoint], now.timeIntervalSince(cached.checkedAt) < externalSmartInterval {
             return cached.status
         }
@@ -359,7 +398,6 @@ public final class MetricsCollector {
         return false
     }
 
-    // 沿着 IOKit 设备树向上找到 IOBlockStorageDevice，检查电源状态唤醒后通过 CSMART 读取原生 SMARTLib / SATSMARTLib
     private func queryIOKitSmartStatus(forBSDName bsdName: String, fallbackCache: String?) -> String {
         guard !bsdName.isEmpty,
               let match = IOBSDNameMatching(kIOMasterPortDefault, 0, bsdName) else {
@@ -371,7 +409,6 @@ public final class MetricsCollector {
         var depth = 0
         while current != 0 && depth < 16 {
             if IOObjectConformsTo(current, "IOBlockStorageDevice") != 0 {
-                // 先查自身及直属父节点 (如 SATSMARTDriver) 的电源状态，防止唤醒正在休眠的机械硬盘
                 var parent: io_registry_entry_t = 0
                 let hasParent = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) == kIOReturnSuccess
                 let asleep = isEntryAsleep(current) || (hasParent && isEntryAsleep(parent))
@@ -382,7 +419,6 @@ public final class MetricsCollector {
                     return fallbackCache ?? "待机"
                 }
 
-                // 只有在硬盘醒着时，调用原生 CSMART (IOATASMARTInterface) 读取健康度
                 let code = csmart_check_service(current)
                 IOObjectRelease(current)
                 if code == 1 { return "良好" }
@@ -450,6 +486,14 @@ public final class MetricsCollector {
     }
 
     public func collectPayload() -> MetricsPayload {
+        var bootTime = timeval()
+        var size = MemoryLayout<timeval>.size
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        sysctl(&mib, 2, &bootTime, &size, nil, 0)
+        let nowSec = time(nil)
+        let uptime = max(0, Int(nowSec - bootTime.tv_sec))
+        let bootDate = Date(timeIntervalSince1970: TimeInterval(bootTime.tv_sec))
+
         let cpu = getCPUUsage()
         let mem = getMemoryStats()
         let memPressure = getMemoryPressure()
@@ -459,17 +503,10 @@ public final class MetricsCollector {
         let power = SMCReader.shared.getSystemPower()
         let processData = getRealTopProcesses()
         let volumes = getDiskVolumesCached()
-        let kernelHealth = getKernelHealth(wiredMB: mem.wiredMB, wiredPercent: mem.wiredPercent)
+        let kernelHealth = getKernelHealth(wiredMB: mem.wiredMB, wiredPercent: mem.wiredPercent, bootDate: bootDate)
 
         var load = [Double](repeating: 0.0, count: 3)
         getloadavg(&load, 3)
-
-        var bootTime = timeval()
-        var size = MemoryLayout<timeval>.size
-        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
-        sysctl(&mib, 2, &bootTime, &size, nil, 0)
-        let nowSec = time(nil)
-        let uptime = max(0, Int(nowSec - bootTime.tv_sec))
 
         return MetricsPayload(
             uptimeSeconds: uptime,
