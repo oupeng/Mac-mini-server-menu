@@ -65,12 +65,10 @@ public final class MetricsCollector {
     private var lastDiskWrite: UInt64 = 0
     private var lastDiskTime: Date = Date()
 
-    // 10 分钟低频缓存：磁盘空间与 SMART 状态
     private var lastDiskSpaceCheckTime: Date = .distantPast
     private var cachedDiskVolumes: [DiskVolumeInfo] = []
     private let diskSpaceInterval: TimeInterval = 600
 
-    // 5 秒中频缓存：全系统 Top 进程
     private var lastProcessCheckTime: Date = .distantPast
     private var cachedTopProcesses: [TopProcess] = []
     private var cachedProcessCount: Int = 0
@@ -98,10 +96,11 @@ public final class MetricsCollector {
             return 0.0
         }
 
-        let userDiff = Double(cpuInfo.cpu_ticks.0 - prev.cpu_ticks.0)
-        let sysDiff  = Double(cpuInfo.cpu_ticks.1 - prev.cpu_ticks.1)
-        let idleDiff = Double(cpuInfo.cpu_ticks.2 - prev.cpu_ticks.2)
-        let niceDiff = Double(cpuInfo.cpu_ticks.3 - prev.cpu_ticks.3)
+        // 修复 Bug 2：使用溢出安全减法 &-，彻底杜绝 UInt32 长期运行绕回归零时下溢崩溃
+        let userDiff = Double(cpuInfo.cpu_ticks.0 &- prev.cpu_ticks.0)
+        let sysDiff  = Double(cpuInfo.cpu_ticks.1 &- prev.cpu_ticks.1)
+        let idleDiff = Double(cpuInfo.cpu_ticks.2 &- prev.cpu_ticks.2)
+        let niceDiff = Double(cpuInfo.cpu_ticks.3 &- prev.cpu_ticks.3)
         let totalTicks = userDiff + sysDiff + idleDiff + niceDiff
 
         lastCPULoad = cpuInfo
@@ -125,7 +124,7 @@ public final class MetricsCollector {
         let active = UInt64(vmStats.active_count) * pageSize
         let wired = UInt64(vmStats.wire_count) * pageSize
         let compressed = UInt64(vmStats.compressor_page_count) * pageSize
-        
+
         let usedBytes = active + wired + compressed
         let usedMB = Int(usedBytes / (1024 * 1024))
         let percent = (Double(usedBytes) / Double(totalBytes)) * 100.0
@@ -137,7 +136,7 @@ public final class MetricsCollector {
     }
 
     public func getMemoryPressure() -> (level: Int, swapMB: Int) {
-        var level: Int32 = 1 
+        var level: Int32 = 1
         var size = MemoryLayout<Int32>.size
         sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0)
 
@@ -182,7 +181,7 @@ public final class MetricsCollector {
     public func getNetworkThroughput() -> (rxSec: UInt64, txSec: UInt64, totalRx: UInt64, totalTx: UInt64) {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
         var len: Int = 0
-        guard sysctl(&mib, 6, nil, &len, nil, 0) == 0 else { return (0, 0, 0, 0) }
+        guard sysctl(&mib, 6, nil, &len, nil, 0) == 0, len > 0 else { return (0, 0, 0, 0) }
 
         var buffer = [Int8](repeating: 0, count: len)
         guard sysctl(&mib, 6, &buffer, &len, nil, 0) == 0 else { return (0, 0, 0, 0) }
@@ -195,9 +194,11 @@ public final class MetricsCollector {
             var cursor = base
             let end = cursor.advanced(by: len)
 
-            while cursor < end {
+            while cursor < end && cursor.distance(to: end) >= MemoryLayout<if_msghdr>.size {
                 let msgHdr = cursor.withMemoryRebound(to: if_msghdr.self, capacity: 1) { $0.pointee }
-                if msgHdr.ifm_type == RTM_IFINFO2 {
+                if msgHdr.ifm_msglen == 0 { break } // 防死循环保护
+
+                if msgHdr.ifm_type == RTM_IFINFO2 && cursor.distance(to: end) >= MemoryLayout<if_msghdr2>.size {
                     let if2m = cursor.withMemoryRebound(to: if_msghdr2.self, capacity: 1) { $0.pointee }
                     let ifIndex = Int(if2m.ifm_index)
                     var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
@@ -274,7 +275,6 @@ public final class MetricsCollector {
         guard count > 0, let buffer = mntbuf else { return cachedDiskVolumes }
 
         var results: [DiskVolumeInfo] = []
-        let smartMap = getCachedSmartStatusMap()
 
         for i in 0..<Int(count) {
             let fs = buffer[i]
@@ -300,9 +300,9 @@ public final class MetricsCollector {
                     var displayName = URL(fileURLWithPath: mntOn).lastPathComponent
                     if mntOn == "/" { displayName = "Macintosh HD" }
 
+                    // 修复 Bug 1：从真实 BSD 设备节点向上追溯物理磁盘 SMART（绝不再误判为“良好”）
                     let devName = URL(fileURLWithPath: mntFrom).lastPathComponent
-                    let bsdParent = devName.components(separatedBy: "s").first ?? devName
-                    let smart = smartMap[bsdParent] ?? "良好"
+                    let smart = findSmartStatus(forBSDName: devName)
 
                     results.append(DiskVolumeInfo(
                         name: displayName,
@@ -321,31 +321,40 @@ public final class MetricsCollector {
         return results
     }
 
-    private func getCachedSmartStatusMap() -> [String: String] {
-        var map: [String: String] = [:]
-        var iter: io_iterator_t = 0
-        let match = IOServiceMatching("IOBlockStorageDevice")
-        guard IOServiceGetMatchingServices(kIOMasterPortDefault, match, &iter) == kIOReturnSuccess else { return map }
-        defer { IOObjectRelease(iter) }
-
-        var dev = IOIteratorNext(iter)
-        while dev != 0 {
-            var props: Unmanaged<CFMutableDictionary>?
-            if IORegistryEntryCreateCFProperties(dev, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
-               let dict = props?.takeRetainedValue() as? [String: Any],
-               let bsdName = dict["BSD Name"] as? String {
-                if let smart = dict["SMART Status"] as? String {
-                    if smart == "Verified" { map[bsdName] = "良好" }
-                    else if smart == "Failing" { map[bsdName] = "故障" }
-                    else { map[bsdName] = "不支持" }
-                } else {
-                    map[bsdName] = "不支持"
-                }
-            }
-            IOObjectRelease(dev)
-            dev = IOIteratorNext(iter)
+    // 纯内存沿着 IOKit 节点树向上查找物理 IOBlockStorageDevice 的缓存 SMART 状态（零硬件唤醒）
+    private func findSmartStatus(forBSDName bsdName: String) -> String {
+        guard !bsdName.isEmpty,
+              let match = IOBSDNameMatching(kIOMasterPortDefault, 0, bsdName) else {
+            return "不支持"
         }
-        return map
+        var current = IOServiceGetMatchingService(kIOMasterPortDefault, match)
+        if current == 0 { return "不支持" }
+
+        var depth = 0
+        while current != 0 && depth < 16 {
+            if IOObjectConformsTo(current, "IOBlockStorageDevice") != 0 {
+                var props: Unmanaged<CFMutableDictionary>?
+                if IORegistryEntryCreateCFProperties(current, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+                   let dict = props?.takeRetainedValue() as? [String: Any],
+                   let smart = dict["SMART Status"] as? String {
+                    IOObjectRelease(current)
+                    if smart == "Verified" { return "良好" }
+                    if smart == "Failing" { return "故障" }
+                    return "不支持"
+                }
+                IOObjectRelease(current)
+                return "不支持"
+            }
+
+            var parent: io_registry_entry_t = 0
+            let kr = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent)
+            IOObjectRelease(current)
+            if kr != kIOReturnSuccess { break }
+            current = parent
+            depth += 1
+        }
+        if current != 0 { IOObjectRelease(current) }
+        return "不支持"
     }
 
     public func getRealTopProcesses() -> (top: [TopProcess], processCount: Int) {
@@ -363,10 +372,10 @@ public final class MetricsCollector {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
 
-        guard let output = String(data: data, encoding: .utf8) else { 
-            return (cachedTopProcesses, cachedProcessCount) 
+        guard let output = String(data: data, encoding: .utf8) else {
+            return (cachedTopProcesses, cachedProcessCount)
         }
-        
+
         var result: [TopProcess] = []
         let lines = output.components(separatedBy: "\n")
         let totalCount = max(0, lines.count - 2)
@@ -388,11 +397,11 @@ public final class MetricsCollector {
                 }
             }
         }
-        
+
         cachedTopProcesses = result
         cachedProcessCount = totalCount
         lastProcessCheckTime = now
-        
+
         return (result, totalCount)
     }
 
