@@ -1,211 +1,159 @@
+import AppKit
 import SwiftUI
+import Combine
 
-struct MenuBarStatusView: View {
-    @ObservedObject var vm: MonitorViewModel
+@main
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
+    }
 
-    private let totalWidth: CGFloat = 275.0
-    private let barHeight: CGFloat = 22.0
+    var statusItem: NSStatusItem!
+    var viewModel: MonitorViewModel!
+    private var cancellables = Set<AnyCancellable>()
 
-    var body: some View {
-        let kernelLevel = vm.data?.kernelHealth?.healthLevel(processCount: vm.data?.processCount ?? 0) ?? 1
+    private let fixedBarWidth: CGFloat = 275.0
 
-        HStack(spacing: 5) {
-            if vm.isOnline, let d = vm.data {
-                // 1. 温控与功耗
-                HStack(spacing: 3) {
-                    Text("\(Int(d.cpuTemp))°")
-                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                        .foregroundColor(.white)
-                    Text("\(Int(d.powerWatts))W")
-                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                        .foregroundColor(.white.opacity(0.65))
+    private var floatingPanel: ModernFloatingPanel!
+    private var hostingController: NSHostingController<DetailPopoverView>!
+    private var outsideClickMonitor: Any?
+
+    private var isDisplaySleeping: Bool = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        viewModel = MonitorViewModel()
+
+        statusItem = NSStatusBar.system.statusItem(withLength: fixedBarWidth)
+        guard let button = statusItem.button else { return }
+
+        renderMenuBarImage()
+
+        viewModel.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.renderMenuBarImage()
                 }
-                .monospacedDigit()
-                .frame(width: 52, alignment: .center)
+            }
+            .store(in: &cancellables)
 
-                WhiteDivider()
+        setupDisplaySleepWatchers()
 
-                // 2. 实时网络吞吐
-                VStack(alignment: .trailing, spacing: 0) {
-                    HStack(spacing: 1) {
-                        Text("↓")
-                            .font(.system(size: 7.5, weight: .bold))
-                            .foregroundColor(.white.opacity(0.6))
-                        Text(formatSpeedNoDecimal(d.netRxBytesPerSec))
-                            .foregroundColor(.white)
-                    }
-                    HStack(spacing: 1) {
-                        Text("↑")
-                            .font(.system(size: 7.5, weight: .bold))
-                            .foregroundColor(.white.opacity(0.6))
-                        Text(formatSpeedNoDecimal(d.netTxBytesPerSec))
-                            .foregroundColor(.white.opacity(0.85))
-                    }
-                }
-                .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                .monospacedDigit()
-                .frame(width: 44, alignment: .trailing)
+        button.target = self
+        button.action = #selector(toggleFloatingPanel)
 
-                WhiteDivider()
+        let detailView = DetailPopoverView(vm: viewModel)
+        hostingController = NSHostingController(rootView: detailView)
 
-                // 3. 内存压力面积图
-                let pressure = d.memPressureLevel ?? 1
-                let memColor: Color = pressure >= 4 ? .red : (pressure >= 2 ? .yellow : .white)
+        floatingPanel = ModernFloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 480))
+        floatingPanel.contentViewController = hostingController
+    }
 
-                HStack(spacing: 3) {
-                    Text("M")
-                        .font(.system(size: 8, weight: .heavy))
-                        .foregroundColor(memColor == .white ? .white.opacity(0.6) : memColor)
-                    
-                    WideAreaSparkline(data: vm.memPressureHistory, tint: memColor)
-                        .frame(width: 30, height: 15)
-                }
-                .frame(width: 44, alignment: .center)
-
-                WhiteDivider()
-
-                // 4. CPU 实时曲线
-                HStack(spacing: 3) {
-                    Text("C")
-                        .font(.system(size: 8, weight: .heavy))
-                        .foregroundColor(.white.opacity(0.6))
-                    WideAreaSparkline(data: vm.cpuHistory, tint: .white)
-                        .frame(width: 30, height: 15)
-                }
-                .frame(width: 44, alignment: .center)
-
-                WhiteDivider()
-
-                // 5. 磁盘活动
-                HStack(spacing: 3) {
-                    Image(systemName: "internaldrive")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.white.opacity(0.6))
-
-                    WideDualSparkline(
-                        topData: vm.diskReadHistory,
-                        bottomData: vm.diskWriteHistory
-                    )
-                    .frame(width: 30, height: 15)
-                }
-                .frame(width: 44, alignment: .center)
-            } else {
-                HStack(spacing: 5) {
-                    Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white)
-                    Text("Mac mini 离线")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
-                }
-                .frame(width: totalWidth, alignment: .center)
+    private func setupDisplaySleepWatchers() {
+        let wsCenter = NSWorkspace.shared.notificationCenter
+        
+        wsCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.isDisplaySleeping = true
             }
         }
-        .padding(.horizontal, 4)
-        .frame(width: totalWidth, height: barHeight)
-        // 内核异常预警微点：仅在预警/危险时显现，不占布局宽度，平时完全隐形
-        .overlay(alignment: .topLeading) {
-            if vm.isOnline && kernelLevel >= 2 {
-                Circle()
-                    .fill(kernelLevel >= 3 ? Color.red : Color.yellow)
-                    .frame(width: 4.5, height: 4.5)
-                    .offset(x: 3, y: 3)
+        
+        wsCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.isDisplaySleeping = false
+                self?.renderMenuBarImage()
             }
         }
     }
 
-    private func formatSpeedNoDecimal(_ bytes: UInt64) -> String {
-        let kb = Double(bytes) / 1024.0
-        if kb < 1000 {
-            return String(format: "%.0fK", kb)
-        } else {
-            return String(format: "%.0fM", kb / 1024.0)
+    @MainActor
+    private func renderMenuBarImage() {
+        if isDisplaySleeping { return }
+        
+        guard let button = statusItem?.button else { return }
+
+        let view = MenuBarStatusView(vm: viewModel)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
+
+        if let image = renderer.nsImage {
+            image.isTemplate = false
+            button.image = image
+            button.imagePosition = .imageOnly
+            statusItem.length = fixedBarWidth
         }
     }
-}
 
-struct WhiteDivider: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.2))
-            .frame(width: 0.5, height: 11)
-    }
-}
-
-struct WideAreaSparkline: View {
-    let data: [Double]
-    var tint: Color = .white
-    private let width: CGFloat = 30.0
-    private let height: CGFloat = 15.0
-
-    var body: some View {
-        let count = data.count
-        let step = count > 1 ? width / CGFloat(count - 1) : width
-
-        ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(Color.white.opacity(0.12))
-
-            Path { p in
-                p.move(to: CGPoint(x: 0, y: height))
-                for (i, val) in data.enumerated() {
-                    let y = height - (CGFloat(val) * (height - 2)) - 1
-                    p.addLine(to: CGPoint(x: CGFloat(i) * step, y: max(0, min(height, y))))
-                }
-                p.addLine(to: CGPoint(x: width, y: height))
-                p.closeSubpath()
-            }
-            .fill(LinearGradient(colors: [tint.opacity(0.45), tint.opacity(0.1)], startPoint: .top, endPoint: .bottom))
-
-            Path { p in
-                for (i, val) in data.enumerated() {
-                    let x = CGFloat(i) * step
-                    let y = height - (CGFloat(val) * (height - 2)) - 1
-                    if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
-                }
-            }
-            .stroke(tint, lineWidth: 1.0)
+    @objc func toggleFloatingPanel() {
+        if floatingPanel.isVisible {
+            hideFloatingPanel()
+            return
         }
-        .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 1.5))
+
+        guard let button = statusItem.button, let win = button.window else { return }
+
+        NSApp.activate(ignoringOtherApps: true)
+
+        let barScreenRect = win.convertToScreen(button.bounds)
+        let panelWidth: CGFloat = 340.0
+        let panelHeight = hostingController.view.fittingSize.height
+
+        let targetX = barScreenRect.midX - (panelWidth / 2.0)
+        let targetY = barScreenRect.minY - panelHeight - 6.0
+
+        let currentScreen = win.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        let safeX = max(10.0, min(currentScreen.frame.maxX - panelWidth - 10.0, targetX))
+
+        floatingPanel.setFrame(NSRect(x: safeX, y: targetY, width: panelWidth, height: panelHeight), display: true)
+        floatingPanel.orderFront(nil)
+        floatingPanel.makeKey()
+
+        setupOutsideClickMonitor()
+    }
+
+    private func hideFloatingPanel() {
+        floatingPanel.orderOut(nil)
+        if let monitor = outsideClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            outsideClickMonitor = nil
+        }
+    }
+
+    private func setupOutsideClickMonitor() {
+        if outsideClickMonitor != nil { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.hideFloatingPanel()
+            }
+        }
     }
 }
 
-struct WideDualSparkline: View {
-    let topData: [Double]
-    let bottomData: [Double]
-    private let width: CGFloat = 30.0
-    private let height: CGFloat = 15.0
+final class ModernFloatingPanel: NSPanel {
+    init(contentRect: NSRect) {
+        super.init(
+            contentRect: contentRect,
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        self.isFloatingPanel = true
+        self.level = .statusBar
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.hasShadow = true
+        self.animationBehavior = .utilityWindow
+        self.titleVisibility = .hidden
+        self.titlebarAppearsTransparent = true
+        self.isMovableByWindowBackground = false
+    }
 
-    var body: some View {
-        let midY: CGFloat = height / 2.0
-
-        Canvas { context, _ in
-            let step = topData.count > 1 ? width / CGFloat(topData.count - 1) : width
-
-            context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: width, height: height), cornerRadius: 1.5), with: .color(Color.white.opacity(0.12)))
-
-            var midLine = Path()
-            midLine.move(to: CGPoint(x: 0, y: midY))
-            midLine.addLine(to: CGPoint(x: width, y: midY))
-            context.stroke(midLine, with: .color(Color.white.opacity(0.25)), lineWidth: 0.5)
-
-            var topPath = Path()
-            for (i, val) in topData.enumerated() {
-                let x = CGFloat(i) * step
-                let y = midY - (CGFloat(val) * (midY - 1))
-                if i == 0 { topPath.move(to: CGPoint(x: x, y: y)) } else { topPath.addLine(to: CGPoint(x: x, y: y)) }
-            }
-            context.stroke(topPath, with: .color(Color.white), lineWidth: 1.0)
-
-            var bottomPath = Path()
-            for (i, val) in bottomData.enumerated() {
-                let x = CGFloat(i) * step
-                let y = midY + (CGFloat(val) * (midY - 1))
-                if i == 0 { bottomPath.move(to: CGPoint(x: x, y: y)) } else { bottomPath.addLine(to: CGPoint(x: x, y: y)) }
-            }
-            context.stroke(bottomPath, with: .color(Color.white.opacity(0.7)), lineWidth: 1.0)
-        }
-        .frame(width: width, height: height)
+    override var canBecomeKey: Bool {
+        return true
     }
 }
