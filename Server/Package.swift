@@ -9,8 +9,16 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CSMART",
+            dependencies: [],
+            linkerSettings: [
+                .linkedFramework("IOKit"),
+                .linkedFramework("CoreFoundation")
+            ]
+        ),
+        .target(
             name: "MiniServer",
-            dependencies: []
+            dependencies: ["CSMART"]
         )
     ]
 )
