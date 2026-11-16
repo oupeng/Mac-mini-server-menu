@@ -20,12 +20,13 @@ public struct KernelHealthInfo: Codable {
     public let mbufLimReached: Int
     public let mbufCount: Int
     public let zleakActive: Int
+    public let recentAlerts: Int?
 
     public func healthLevel(processCount: Int) -> Int {
         let fileRatio = maxFiles > 0 ? Double(openFiles) / Double(maxFiles) : 0.0
         let procRatio = maxProc > 0 ? Double(processCount) / Double(maxProc) : 0.0
 
-        if zleakActive > 0 || mbufLimReached > 0 || wiredPercent >= 72.0 || fileRatio >= 0.85 || procRatio >= 0.85 {
+        if zleakActive > 0 || mbufLimReached > 0 || (recentAlerts ?? 0) > 0 || wiredPercent >= 72.0 || fileRatio >= 0.85 || procRatio >= 0.85 {
             return 3
         }
         if wiredPercent >= 60.0 || fileRatio >= 0.70 || procRatio >= 0.70 {
@@ -115,7 +116,6 @@ public final class MonitorViewModel: ObservableObject {
     public func fetch() { connectWebSocket() }
     public func startPolling() { connectWebSocket() }
 
-    // 修复 Bug 3：绑定具体 task 实例并做 === 校验，杜绝旧连接取消回调误杀新连接
     private func listenMessage(for task: URLSessionWebSocketTask) {
         task.receive { [weak self] result in
             Task { @MainActor [weak self] in
