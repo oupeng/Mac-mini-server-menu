@@ -11,6 +11,31 @@ public struct DiskVolumeItem: Codable, Identifiable {
     public let smartStatus: String
 }
 
+public struct KernelHealthInfo: Codable {
+    public let wiredMB: Int
+    public let wiredPercent: Double
+    public let openFiles: Int
+    public let maxFiles: Int
+    public let maxProc: Int
+    public let mbufLimReached: Int
+    public let mbufCount: Int
+    public let zleakActive: Int
+
+    /// 评估内核整体健康等级: 1 = 良好, 2 = 预警, 3 = 危险
+    public func healthLevel(processCount: Int) -> Int {
+        let fileRatio = maxFiles > 0 ? Double(openFiles) / Double(maxFiles) : 0.0
+        let procRatio = maxProc > 0 ? Double(processCount) / Double(maxProc) : 0.0
+
+        if zleakActive > 0 || mbufLimReached > 0 || wiredPercent >= 72.0 || fileRatio >= 0.85 || procRatio >= 0.85 {
+            return 3
+        }
+        if wiredPercent >= 60.0 || fileRatio >= 0.70 || procRatio >= 0.70 {
+            return 2
+        }
+        return 1
+    }
+}
+
 public struct MetricsData: Codable {
     public let uptimeSeconds: Int
     public let loadAvg: [Double]
@@ -29,9 +54,10 @@ public struct MetricsData: Codable {
     public let totalTxBytes: UInt64?
     public let diskReadBytesPerSec: UInt64
     public let diskWriteBytesPerSec: UInt64
-    public let processCount: Int?        // 新增：进程总数
+    public let processCount: Int?
     public let topProcesses: [TopProcessItem]
     public let diskVolumes: [DiskVolumeItem]?
+    public let kernelHealth: KernelHealthInfo?
 }
 
 public struct TopProcessItem: Codable, Identifiable {
