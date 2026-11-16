@@ -87,7 +87,6 @@ struct DetailPopoverView: View {
                     }
                 }
 
-                // 新增：内核健康卡片（置于“存储空间与健康”上方）
                 if let k = d.kernelHealth {
                     let procCount = d.processCount ?? 0
                     let level = k.healthLevel(processCount: procCount)
@@ -226,7 +225,8 @@ struct DetailPopoverView: View {
                     }
 
                     VStack(spacing: 5) {
-                        ForEach(d.topProcesses) { proc in
+                        // 使用下标作为 ID，避免同名且同 CPU/内存的进程导致 SwiftUI 渲染错乱
+                        ForEach(Array(d.topProcesses.enumerated()), id: \.offset) { _, proc in
                             HStack {
                                 Text(proc.name)
                                     .font(.system(size: 11, weight: .regular))
