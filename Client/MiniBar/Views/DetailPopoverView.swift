@@ -87,6 +87,75 @@ struct DetailPopoverView: View {
                     }
                 }
 
+                // 新增：内核健康卡片（置于“存储空间与健康”上方）
+                if let k = d.kernelHealth {
+                    let procCount = d.processCount ?? 0
+                    let level = k.healthLevel(processCount: procCount)
+                    let statusText = level >= 3 ? "危险" : (level == 2 ? "预警" : "良好")
+                    let fileRatioPct = k.maxFiles > 0 ? Int((Double(k.openFiles) / Double(k.maxFiles)) * 100) : 0
+                    let procRatioPct = k.maxProc > 0 ? Int((Double(procCount) / Double(k.maxProc)) * 100) : 0
+                    let wiredGB = Double(k.wiredMB) / 1024.0
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("内核健康")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(statusText)
+                                .font(.system(size: 8.5, weight: .medium))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(kernelBadgeBackground(level))
+                                )
+                                .foregroundColor(kernelBadgeForeground(level))
+                        }
+
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text("联动内存")
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text(String(format: "%.1fG (%d%%)", wiredGB, Int(k.wiredPercent)))
+                                        .foregroundColor(k.wiredPercent >= 60 ? .orange : .primary.opacity(0.85))
+                                }
+                                HStack {
+                                    Text("系统句柄")
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text("\(formatCompactCount(k.openFiles))/\(formatCompactCount(k.maxFiles)) (\(fileRatioPct)%)")
+                                        .foregroundColor(fileRatioPct >= 70 ? .orange : .primary.opacity(0.85))
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text("进程槽位")
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text("\(procCount)/\(k.maxProc) (\(procRatioPct)%)")
+                                        .foregroundColor(procRatioPct >= 70 ? .orange : .primary.opacity(0.85))
+                                }
+                                HStack {
+                                    Text("缓冲/泄漏")
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text("溢\(k.mbufLimReached) · 漏\(k.zleakActive)")
+                                        .foregroundColor((k.mbufLimReached > 0 || k.zleakActive > 0) ? .red : .primary.opacity(0.85))
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .font(.system(size: 9.5, design: .monospaced))
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+                }
+
                 if let volumes = d.diskVolumes, !volumes.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -108,7 +177,6 @@ struct DetailPopoverView: View {
                                             .lineLimit(1)
                                         Spacer()
                                         
-                                        // 核心修改：使用 .primary 适配白天/黑夜模式
                                         Text("剩余 \(formatTotalBytes(vol.freeBytes))")
                                             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                             .foregroundColor(.primary.opacity(0.85))
@@ -126,7 +194,6 @@ struct DetailPopoverView: View {
 
                                     GeometryReader { g in
                                         ZStack(alignment: .leading) {
-                                            // 进度条背景颜色适配双模式
                                             Capsule()
                                                 .fill(Color.primary.opacity(0.12))
                                             Capsule()
@@ -179,7 +246,6 @@ struct DetailPopoverView: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
-                // 核心修改：加回底部的打开屏幕镜像按钮
                 HStack {
                     Spacer()
                     Button("打开屏幕镜像") {
@@ -237,7 +303,13 @@ struct DetailPopoverView: View {
         }
     }
 
-    // 颜色适配双模式
+    private func formatCompactCount(_ count: Int) -> String {
+        if count >= 1000 {
+            return String(format: "%.1fK", Double(count) / 1000.0)
+        }
+        return "\(count)"
+    }
+
     private func smartBadgeBackground(_ status: String) -> Color {
         if status == "良好" { return Color.primary.opacity(0.08) }
         if status == "故障" { return Color.red.opacity(0.2) }
@@ -248,6 +320,18 @@ struct DetailPopoverView: View {
         if status == "良好" { return Color.primary.opacity(0.8) }
         if status == "故障" { return Color.red.opacity(0.9) }
         return Color.secondary
+    }
+
+    private func kernelBadgeBackground(_ level: Int) -> Color {
+        if level >= 3 { return Color.red.opacity(0.2) }
+        if level == 2 { return Color.orange.opacity(0.2) }
+        return Color.primary.opacity(0.08)
+    }
+
+    private func kernelBadgeForeground(_ level: Int) -> Color {
+        if level >= 3 { return Color.red.opacity(0.9) }
+        if level == 2 { return Color.orange.opacity(0.9) }
+        return Color.primary.opacity(0.8)
     }
 }
 
