@@ -94,6 +94,7 @@ struct DetailPopoverView: View {
                     let fileRatioPct = k.maxFiles > 0 ? Int((Double(k.openFiles) / Double(k.maxFiles)) * 100) : 0
                     let procRatioPct = k.maxProc > 0 ? Int((Double(procCount) / Double(k.maxProc)) * 100) : 0
                     let wiredGB = Double(k.wiredMB) / 1024.0
+                    let alerts = k.recentAlerts ?? 0
 
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -148,6 +149,16 @@ struct DetailPopoverView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity)
+                        }
+                        .font(.system(size: 9.5, design: .monospaced))
+
+                        // 新增：开机后 24h 内异常诊断报告哨兵
+                        HStack {
+                            Text("本次开机异常报告 (Jetsam / 看门狗)")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(alerts) 次")
+                                .foregroundColor(alerts > 0 ? .red : .primary.opacity(0.85))
                         }
                         .font(.system(size: 9.5, design: .monospaced))
                     }
@@ -225,7 +236,6 @@ struct DetailPopoverView: View {
                     }
 
                     VStack(spacing: 5) {
-                        // 使用下标作为 ID，避免同名且同 CPU/内存的进程导致 SwiftUI 渲染错乱
                         ForEach(Array(d.topProcesses.enumerated()), id: \.offset) { _, proc in
                             HStack {
                                 Text(proc.name)
