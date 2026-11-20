@@ -95,6 +95,9 @@ struct DetailPopoverView: View {
                     let procRatioPct = k.maxProc > 0 ? Int((Double(procCount) / Double(k.maxProc)) * 100) : 0
                     let wiredGB = Double(k.wiredMB) / 1024.0
                     let alerts = k.recentAlerts ?? 0
+                    let recentMbuf = k.mbufLimRecent60s ?? 0
+
+                    let mbufColor: Color = (k.zleakActive > 0 || recentMbuf >= 50_000) ? .red : (recentMbuf >= 5_000 ? .orange : .primary.opacity(0.85))
 
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -144,15 +147,14 @@ struct DetailPopoverView: View {
                                     Text("缓冲/泄漏")
                                         .foregroundColor(.secondary)
                                     Spacer()
-                                    Text("溢\(k.mbufLimReached) · 漏\(k.zleakActive)")
-                                        .foregroundColor((k.mbufLimReached > 0 || k.zleakActive > 0) ? .red : .primary.opacity(0.85))
+                                    Text("溢+\(formatCompactCount(recentMbuf)) · 漏\(k.zleakActive)")
+                                        .foregroundColor(mbufColor)
                                 }
                             }
                             .frame(maxWidth: .infinity)
                         }
                         .font(.system(size: 9.5, design: .monospaced))
 
-                        // 新增：开机后 24h 内异常诊断报告哨兵
                         HStack {
                             Text("本次开机异常报告 (Jetsam / 看门狗)")
                                 .foregroundColor(.secondary)
