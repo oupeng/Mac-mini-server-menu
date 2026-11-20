@@ -26,9 +26,10 @@ public struct KernelHealthInfo: Codable {
     public let maxFiles: Int
     public let maxProc: Int
     public let mbufLimReached: Int
+    public let mbufLimRecent60s: Int // 新增：最近 60 秒内实时触发缓冲流控的新增次数
     public let mbufCount: Int
     public let zleakActive: Int
-    public let recentAlerts: Int // 本次开机后 24 小时内的 Jetsam/看门狗/Panic 次数
+    public let recentAlerts: Int
 }
 
 public struct MetricsPayload: Codable {
@@ -86,6 +87,11 @@ public final class MetricsCollector {
     private var lastAlertCheckTime: Date = .distantPast
     private var cachedRecentAlerts: Int = 0
     private let alertCheckInterval: TimeInterval = 60.0
+
+    // Socket 缓冲溢出 60 秒滑动增量窗口（防止历史累计值永久亮红灯）
+    private var lastMbufLimReached: Int?
+    private var lastMbufSampleTime: Date = .distantPast
+    private var recentMbufBurstSamples: [(time: Date, delta: Int)] = []
 
     public init() {
         _ = getCPUUsage()
@@ -177,7 +183,6 @@ public final class MetricsCollector {
         return 0
     }
 
-    // 哨兵：仅扫描内置盘 /Library/Logs/DiagnosticReports 目录，捕捉 JetsamEvent / 看门狗超时 / Panic
     private func getRecentDiagnosticAlertsCount(bootDate: Date) -> Int {
         let now = Date()
         if now.timeIntervalSince(lastAlertCheckTime) < alertCheckInterval {
@@ -210,14 +215,41 @@ public final class MetricsCollector {
         return alertCount
     }
 
+    private func calculateRecentMbufLimDelta(currentLim: Int) -> Int {
+        let now = Date()
+        // 如果间隔超过 10 秒没有采样（例如刚启动或 MacBook 休眠重连），重置基线防误报
+        if lastMbufLimReached == nil || now.timeIntervalSince(lastMbufSampleTime) > 10.0 {
+            lastMbufLimReached = currentLim
+            lastMbufSampleTime = now
+            recentMbufBurstSamples.removeAll()
+            return 0
+        }
+
+        let prev = lastMbufLimReached ?? currentLim
+        let delta = currentLim >= prev ? (currentLim - prev) : 0
+        lastMbufLimReached = currentLim
+        lastMbufSampleTime = now
+
+        if delta > 0 {
+            recentMbufBurstSamples.append((time: now, delta: delta))
+        }
+        recentMbufBurstSamples.removeAll { now.timeIntervalSince($0.time) > 60.0 }
+
+        return recentMbufBurstSamples.reduce(0) { $0 + $1.delta }
+    }
+
     public func getKernelHealth(wiredMB: Int, wiredPercent: Double, bootDate: Date) -> KernelHealthInfo {
+        let limReached = readSysctlInt("kern.ipc.sbmb_limreached")
+        let recent60s = calculateRecentMbufLimDelta(currentLim: limReached)
+
         return KernelHealthInfo(
             wiredMB: wiredMB,
             wiredPercent: wiredPercent,
             openFiles: readSysctlInt("kern.num_files"),
             maxFiles: readSysctlInt("kern.maxfiles"),
             maxProc: readSysctlInt("kern.maxproc"),
-            mbufLimReached: readSysctlInt("kern.ipc.sbmb_limreached"),
+            mbufLimReached: limReached,
+            mbufLimRecent60s: recent60s,
             mbufCount: readSysctlInt("kern.ipc.sbmb_cnt"),
             zleakActive: readSysctlInt("kern.zleak.active"),
             recentAlerts: getRecentDiagnosticAlertsCount(bootDate: bootDate)
