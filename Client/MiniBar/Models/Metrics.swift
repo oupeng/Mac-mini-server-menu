@@ -18,6 +18,7 @@ public struct KernelHealthInfo: Codable {
     public let maxFiles: Int
     public let maxProc: Int
     public let mbufLimReached: Int
+    public let mbufLimRecent60s: Int?
     public let mbufCount: Int
     public let zleakActive: Int
     public let recentAlerts: Int?
@@ -25,11 +26,12 @@ public struct KernelHealthInfo: Codable {
     public func healthLevel(processCount: Int) -> Int {
         let fileRatio = maxFiles > 0 ? Double(openFiles) / Double(maxFiles) : 0.0
         let procRatio = maxProc > 0 ? Double(processCount) / Double(maxProc) : 0.0
+        let recentMbuf = mbufLimRecent60s ?? 0
 
-        if zleakActive > 0 || mbufLimReached > 0 || (recentAlerts ?? 0) > 0 || wiredPercent >= 72.0 || fileRatio >= 0.85 || procRatio >= 0.85 {
+        if zleakActive > 0 || (recentAlerts ?? 0) > 0 || recentMbuf >= 50_000 || wiredPercent >= 72.0 || fileRatio >= 0.85 || procRatio >= 0.85 {
             return 3
         }
-        if wiredPercent >= 60.0 || fileRatio >= 0.70 || procRatio >= 0.70 {
+        if recentMbuf >= 5_000 || wiredPercent >= 60.0 || fileRatio >= 0.70 || procRatio >= 0.70 {
             return 2
         }
         return 1
