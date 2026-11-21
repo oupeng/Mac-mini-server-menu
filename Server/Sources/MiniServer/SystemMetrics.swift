@@ -26,7 +26,7 @@ public struct KernelHealthInfo: Codable {
     public let maxFiles: Int
     public let maxProc: Int
     public let mbufLimReached: Int
-    public let mbufLimRecent60s: Int // 新增：最近 60 秒内实时触发缓冲流控的新增次数
+    public let mbufLimRecent60s: Int
     public let mbufCount: Int
     public let zleakActive: Int
     public let recentAlerts: Int
@@ -88,7 +88,7 @@ public final class MetricsCollector {
     private var cachedRecentAlerts: Int = 0
     private let alertCheckInterval: TimeInterval = 60.0
 
-    // Socket 缓冲溢出 60 秒滑动增量窗口（防止历史累计值永久亮红灯）
+    // Socket 缓冲溢出 60 秒滑动增量窗口
     private var lastMbufLimReached: Int?
     private var lastMbufSampleTime: Date = .distantPast
     private var recentMbufBurstSamples: [(time: Date, delta: Int)] = []
@@ -183,6 +183,21 @@ public final class MetricsCollector {
         return 0
     }
 
+    // 核心修复：优先从文件名提取真实的崩溃时间（如 2026-11-16-082719），绝不被系统归档改写 mtime 误导
+    private func parseDiagnosticReportDate(filename: String, fullPath: String, formatter: DateFormatter) -> Date? {
+        if let range = filename.range(of: #"\d{4}-\d{2}-\d{2}-\d{6}"#, options: .regularExpression) {
+            let dateStr = String(filename[range])
+            if let parsed = formatter.date(from: dateStr) {
+                return parsed
+            }
+        }
+        // 兜底：若文件名无时间戳，只取文件创建时间 (creationDate)，不取会被 _analyticsd 改写的 modificationDate
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath) {
+            return attrs[.creationDate] as? Date
+        }
+        return nil
+    }
+
     private func getRecentDiagnosticAlertsCount(bootDate: Date) -> Int {
         let now = Date()
         if now.timeIntervalSince(lastAlertCheckTime) < alertCheckInterval {
@@ -193,6 +208,11 @@ public final class MetricsCollector {
         let cutoff = max(bootDate, now.addingTimeInterval(-86400))
         var alertCount = 0
 
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+
         if let files = try? FileManager.default.contentsOfDirectory(atPath: dirPath) {
             for name in files {
                 let isJetsam = name.hasPrefix("JetsamEvent-") && name.hasSuffix(".diag")
@@ -201,9 +221,8 @@ public final class MetricsCollector {
 
                 if isJetsam || isWatchdog || isPanic {
                     let fullPath = dirPath + "/" + name
-                    if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath),
-                       let modDate = (attrs[.modificationDate] as? Date) ?? (attrs[.creationDate] as? Date),
-                       modDate > cutoff {
+                    if let eventDate = parseDiagnosticReportDate(filename: name, fullPath: fullPath, formatter: formatter),
+                       eventDate > cutoff {
                         alertCount += 1
                     }
                 }
@@ -217,7 +236,6 @@ public final class MetricsCollector {
 
     private func calculateRecentMbufLimDelta(currentLim: Int) -> Int {
         let now = Date()
-        // 如果间隔超过 10 秒没有采样（例如刚启动或 MacBook 休眠重连），重置基线防误报
         if lastMbufLimReached == nil || now.timeIntervalSince(lastMbufSampleTime) > 10.0 {
             lastMbufLimReached = currentLim
             lastMbufSampleTime = now
