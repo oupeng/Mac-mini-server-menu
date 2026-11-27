@@ -189,7 +189,8 @@ struct DetailPopoverView: View {
                                             .lineLimit(1)
                                         Spacer()
                                         
-                                        Text("剩余 \(formatTotalBytes(vol.freeBytes))")
+                                        // 选项 A：使用苹果标准 1000 十进制显示纯物理剩余空间
+                                        Text("剩余 \(formatDiskBytes(vol.freeBytes))")
                                             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                             .foregroundColor(.primary.opacity(0.85))
 
@@ -312,6 +313,16 @@ struct DetailPopoverView: View {
             return String(format: "%.1fG", gb)
         } else {
             return String(format: "%.2fT", gb / 1024.0)
+        }
+    }
+
+    // 磁盘专用：苹果标准 1000 十进制换算（与 df -H、访达单位一致）
+    private func formatDiskBytes(_ bytes: UInt64) -> String {
+        let gb = Double(bytes) / 1_000_000_000.0
+        if gb < 1000.0 {
+            return String(format: "%.1fG", gb)
+        } else {
+            return String(format: "%.2fT", gb / 1000.0)
         }
     }
 
